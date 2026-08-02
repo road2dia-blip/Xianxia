@@ -418,8 +418,11 @@ const Bus = {
    falls back to a built-in list, so this never throws during early boot.
    Epithets are joined with a plain space because DATA.names.epithets already
    carry their own connector ('the Unswept', 'of the Late Frost', 'Nine-Cup').
-   Shape: 'Shen Qingzhi' or, on a 40% roll, 'Shen Qingzhi of the Late Frost'.
-   With the shipped 20 x 24 x 16 tables that is 480 x 17 = 8160 distinct names. */
+   Shape: 'Shen Qingzhi' or 'Shen Qingzhi of the Late Frost'. The epithet slot
+   is drawn uniformly from (epithets.length + 1) options — one of which is "no
+   epithet" — so with the shipped 20 x 24 x 16 tables all 480 x 17 = 8160 names
+   are equally likely. It is still a hash, not a bijection: a caller minting a
+   large roster (duel ladder) must dedupe and re-seed on collision. */
 function uNameFrom(seed, surnames, givens, epithets) {
   const sList = (Array.isArray(surnames) && surnames.length)
     ? surnames
@@ -432,11 +435,11 @@ function uNameFrom(seed, surnames, givens, epithets) {
   const rng = U.rngFrom(seed);
   const sur = String(sList[Math.floor(rng() * sList.length) % sList.length] || 'Shen');
   const giv = String(gList[Math.floor(rng() * gList.length) % gList.length] || 'Qingzhi');
-  const roll = rng();
+  const slot = Math.floor(rng() * (eList.length + 1)) - 1;   // -1 => no epithet
 
   let name = sur + ' ' + giv;
-  if (eList.length > 0 && roll < 0.40) {
-    const ep = String(eList[Math.floor(rng() * eList.length) % eList.length] || '').trim();
+  if (slot >= 0 && slot < eList.length) {
+    const ep = String(eList[slot] || '').trim();
     if (ep) name = name + ' ' + ep;
   }
   return name;
