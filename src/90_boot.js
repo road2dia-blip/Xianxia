@@ -119,6 +119,30 @@ const Boot = {
     window.addEventListener('error', (e) => {
       console.error('[everdao] uncaught:', e.error || e.message);
     });
+
+    // Hidden debug handle. The whole game lives inside an IIFE, so this is the
+    // only door in — used by the dev panel's autoplay sim and by tools/smoke.js.
+    // Harmless to ship: it exposes nothing a player could not already edit in
+    // their own localStorage.
+    try {
+      Object.defineProperty(window, '__ED', {
+        value: {
+          get S() { return S; },
+          set S(v) { S = v; },
+          CONFIG, DATA, DATAX, U, Fmt, Bus, UI, Save, Daily, Offline,
+          Stats, Econ, Combat, Boot, Creation,
+          get sys() {
+            const o = {};
+            for (const { name, sys } of Boot.systems) o[name] = sys;
+            return o;
+          },
+          get Cultivation() { return typeof Cultivation !== 'undefined' ? Cultivation : null; },
+          get Wilds() { return typeof Wilds !== 'undefined' ? Wilds : null; },
+          get Dev() { return typeof Dev !== 'undefined' ? Dev : null; },
+        },
+        writable: false, enumerable: false, configurable: false,
+      });
+    } catch (e) { /* non-fatal */ }
   },
 
   /* Runs once the player exists (either loaded or freshly created). */

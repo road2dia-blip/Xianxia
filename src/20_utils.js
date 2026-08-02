@@ -4,38 +4,33 @@
  * This module reads NOTHING from S and touches no DOM. It is pure helpers.
  *
  * FORMULAS
- *   hash(str)        FNV-1a 32-bit over UTF-16 code units, then an avalanche
- *                    finaliser (xor-shift / imul / xor-shift), returned unsigned:
- *                      h = 2166136261
- *                      for each c: h = (h ^ c) * 16777619   (mod 2^32)
- *                      h ^= h>>>16; h *= 2246822507; h ^= h>>>13;
- *                      h *= 3266489909; h ^= h>>>16
- *   rngFrom(seed)    mulberry32:
- *                      a = (a + 0x6D2B79F5) mod 2^32
- *                      t = a
- *                      t = imul(t ^ (t>>>15), t | 1)
- *                      t ^= t + imul(t ^ (t>>>7), t | 61)
- *                      return ((t ^ (t>>>14)) >>> 0) / 2^32     -> [0,1)
- *   Fmt.n(v)         tier = floor(log1000(|v|));  s = |v| / 1000^tier
- *                    tier 0 -> round to integer
- *                    tier 1..4 -> K,M,B,T ; tier>=5 -> two letters where
- *                      idx = tier-5, first = 'a'+floor(idx/26), second = 'a'+idx%26
- *                      (so 1e15='aa', 1e18='ab', ... 1e90='az', 1e93='ba')
- *                    decimals chosen for 3 significant figures:
- *                      s<10 -> 2dp, s<100 -> 1dp, else 0dp    (1.23K / 12.3M / 123B)
- *   weekStr(d)       ISO-8601 week, computed LOCAL:
- *                      thu  = <local midnight of d> shifted to the Thursday of its week
- *                      base = the Thursday of the week containing Jan 4 of thu's year
- *                      week = 1 + round((thu - base) / 7 days)
- *   uNameFrom        deterministic: rng = rngFrom(seed); surname, given, then a
- *                    40% epithet roll — same seed always yields the same name.
+ *   hash(str)     FNV-1a 32-bit then an avalanche finaliser, returned unsigned:
+ *                   h = 2166136261; per char: h = (h ^ c) * 16777619  (mod 2^32)
+ *                   h ^= h>>>16; h *= 2246822507; h ^= h>>>13;
+ *                   h *= 3266489909; h ^= h>>>16
+ *   rngFrom(seed) mulberry32:
+ *                   a = (a + 0x6D2B79F5) mod 2^32 ; t = a
+ *                   t = imul(t ^ (t>>>15), t | 1)
+ *                   t ^= t + imul(t ^ (t>>>7), t | 61)
+ *                   return ((t ^ (t>>>14)) >>> 0) / 2^32          -> [0,1)
+ *   Fmt.n(v)      tier = floor(log1000(|v|)) ; s = |v| / 1000^tier
+ *                   tier 0 -> round to integer
+ *                   tier 1..4 -> K,M,B,T ; tier>=5 -> two letters where
+ *                     idx = tier-5, first='a'+floor(idx/26), second='a'+idx%26
+ *                     (1e15='aa', 1e18='ab', ... 1e90='az', 1e93='ba')
+ *                   3 significant figures: s<10 -> 2dp, s<100 -> 1dp, else 0dp
+ *   weekStr(d)    ISO-8601 week, computed on LOCAL dates:
+ *                   thu  = local midnight of d, shifted to its week's Thursday
+ *                   base = Thursday of the week containing Jan 4 of thu's year
+ *                   week = 1 + round((thu - base) / 7 days)
+ *   uNameFrom     rng = rngFrom(seed); surname, given, then a 40% epithet roll,
+ *                 so the same seed always yields the same name.
  * ------------------------------------------------------------------------ */
 
 const U = {
 
   /* ------------------------------------------------------------ RANDOMNESS */
-
-  /* Float in [min(a,b), max(a,b)).  U.rand() -> [0,1) ; U.rand(5) -> [0,5). */
+  /* Float in [min(a,b), max(a,b)). U.rand() -> [0,1) ; U.rand(5) -> [0,5). */
   rand(a, b) {
     let hi = (a === undefined) ? 1 : Number(a);
     let lo = (b === undefined) ? 0 : Number(b);
@@ -44,7 +39,6 @@ const U = {
     if (lo > hi) { const t = lo; lo = hi; hi = t; }
     return lo + Math.random() * (hi - lo);
   },
-
   /* Integer, inclusive of both ends. U.rint(5) -> 0..5 ; U.rint(2,4) -> 2..4. */
   rint(a, b) {
     let lo, hi;
@@ -56,7 +50,6 @@ const U = {
     if (lo > hi) { const t = lo; lo = hi; hi = t; }
     return lo + Math.floor(Math.random() * (hi - lo + 1));
   },
-
   /* Boolean roll. p is a probability in 0..1; out-of-range is clamped. */
   chance(p) {
     const x = Number(p);
@@ -65,13 +58,11 @@ const U = {
     if (x >= 1) return true;
     return Math.random() < x;
   },
-
   /* Uniform element. Returns null for a missing or empty array. */
   pick(arr) {
     if (!Array.isArray(arr) || arr.length === 0) return null;
     return arr[Math.floor(Math.random() * arr.length)];
   },
-
   /* wfn(item, i) => weight. Negative/NaN weights count as 0.
      If every weight is 0 the pick falls back to uniform. */
   weightedPick(arr, wfn) {
@@ -93,7 +84,6 @@ const U = {
     }
     return arr[arr.length - 1];
   },
-
   /* Fisher-Yates. Returns a NEW array; the input is never mutated. */
   shuffle(arr) {
     const out = Array.isArray(arr) ? arr.slice() : [];
@@ -115,7 +105,6 @@ const U = {
     if (Number.isFinite(b) && x > b) x = b;
     return x;
   },
-
   /* Sum of an array. Optional fn(item,i) selector. Non-numbers are skipped. */
   sum(arr, fn) {
     if (!Array.isArray(arr)) return 0;
@@ -126,7 +115,6 @@ const U = {
     }
     return t;
   },
-
   /* Deterministic unsigned 32-bit hash (FNV-1a + avalanche). Same string in,
      same number out, forever — safe to persist in saves as a seed. */
   hash(str) {
@@ -141,7 +129,6 @@ const U = {
     h ^= h >>> 16;
     return h >>> 0;
   },
-
   /* mulberry32. seed may be a number or any string (it gets hashed).
      Returns a zero-arg function producing floats in [0,1). */
   rngFrom(seed) {
@@ -159,14 +146,12 @@ const U = {
   },
 
   /* ----------------------------------------------------------------- TIME */
-
   /* 'YYYY-MM-DD' in the player's LOCAL timezone (never UTC — daily resets
      must line up with the player's own midnight). */
   todayStr(d) {
     const dt = U._toDate(d);
     return dt.getFullYear() + '-' + U._p2(dt.getMonth() + 1) + '-' + U._p2(dt.getDate());
   },
-
   /* 'YYYY-Www' — ISO-8601 week number, computed on LOCAL dates.
      Note the year is the ISO week-year, which can differ from the calendar
      year for the first/last days of January/December. */
@@ -184,7 +169,6 @@ const U = {
   },
 
   /* --------------------------------------------------------------- OBJECTS */
-
   /* JSON round-trip clone. Primitives pass through. Never throws. */
   deepClone(o) {
     if (o === null || typeof o !== 'object') return o;
@@ -195,7 +179,6 @@ const U = {
       return Array.isArray(o) ? [] : {};
     }
   },
-
   /* Short unique string id. Monotonic counter + time + a little noise. */
   id() {
     U._idc = (U._idc + 1) % 2176782336;
@@ -214,7 +197,6 @@ const U = {
     if (x < 0) return '00';
     return x < 10 ? '0' + x : String(x);
   },
-
   /* Accepts a Date, ms epoch, parseable string, or nothing. Always returns a
      valid Date (falls back to "now" rather than producing Invalid Date). */
   _toDate(v) {
@@ -234,18 +216,15 @@ const U = {
 /* ========================================================================= */
 
 const Fmt = {
-
   /* 1.23K / 12.3M / 123B — always 3 significant figures above 1000,
      plain integers below it. Handles null/undefined/NaN/Infinity as 0. */
   n(v) {
     return Fmt._fmt(v, false);
   },
-
   /* Same suffix ladder, but always exactly one decimal place. */
   n1(v) {
     return Fmt._fmt(v, true);
   },
-
   /* 0.125 -> '12.5%' (dp defaults to 1). */
   pct(v, dp) {
     let d = (dp === undefined || dp === null) ? 1 : Math.floor(Number(dp));
@@ -256,7 +235,6 @@ const Fmt = {
     if (parseFloat(s) === 0) s = (0).toFixed(d);   // kill '-0.0%'
     return s + '%';
   },
-
   /* '3d 4h' / '4h 12m' / '12m 30s' / '30s'. Negatives clamp to 0 -> '0s'.
      The smaller unit is dropped when it is zero ('4h', not '4h 0m'). */
   dur(sec) {
@@ -271,7 +249,6 @@ const Fmt = {
     if (m > 0) return ss > 0 ? (m + 'm ' + ss + 's') : (m + 'm');
     return ss + 's';
   },
-
   /* 'MM:SS', or 'H:MM:SS' once past an hour. Negatives clamp to '00:00'. */
   durShort(sec) {
     let s = Math.floor(Fmt._num(sec));
@@ -282,7 +259,6 @@ const Fmt = {
     if (h > 0) return h + ':' + Fmt._p2(m) + ':' + Fmt._p2(ss);
     return Fmt._p2(m) + ':' + Fmt._p2(ss);
   },
-
   /* Local wall-clock 'HH:MM' (24h). Bad input renders '--:--'. */
   time(ms) {
     const t = (ms === undefined || ms === null) ? Date.now() : Number(ms);
@@ -291,7 +267,6 @@ const Fmt = {
     if (isNaN(d.getTime())) return '--:--';
     return Fmt._p2(d.getHours()) + ':' + Fmt._p2(d.getMinutes());
   },
-
   /* '+12' / '-3' — magnitude runs through Fmt.n so big deltas stay short. */
   sign(v) {
     const x = Fmt._num(v);
@@ -300,7 +275,6 @@ const Fmt = {
   },
 
   /* -------------------------------------------------------------- private */
-
   /* Coerce anything to a finite number; non-finite and junk become 0. */
   _num(v) {
     if (v === null || v === undefined || v === '') return 0;
@@ -314,7 +288,6 @@ const Fmt = {
     if (!Number.isFinite(x) || x < 0) return '00';
     return x < 10 ? '0' + x : String(x);
   },
-
   /* tier 0 -> '' ; 1..4 -> K M B T ; 5+ -> aa, ab, ... az, ba, bb, ...
      Number.MAX_VALUE is only tier ~102, so two letters always suffice. */
   _suffix(t) {
@@ -329,7 +302,6 @@ const Fmt = {
     if (first > 25) return 'e' + (t * 3);
     return String.fromCharCode(97 + first) + String.fromCharCode(97 + second);
   },
-
   /* Shared engine for n() and n1(). oneDp forces exactly one decimal. */
   _fmt(v, oneDp) {
     const x = Fmt._num(v);
@@ -369,10 +341,8 @@ const Fmt = {
 /* ========================================================================= */
 
 const Bus = {
-
   /* evt -> [fn]. Null-prototype so event names like 'constructor' are safe. */
   _m: Object.create(null),
-
   /* Subscribe. Returns an idempotent unsubscribe function.
      Listeners on '*' receive (evt, data) instead of just (data). */
   on(evt, fn) {
@@ -393,7 +363,6 @@ const Bus = {
       if (i >= 0) l.splice(i, 1);
     };
   },
-
   /* Manual unsubscribe, for callers that kept the fn instead of the unsub. */
   off(evt, fn) {
     if (typeof evt !== 'string') return;
@@ -402,13 +371,11 @@ const Bus = {
     const i = l.indexOf(fn);
     if (i >= 0) l.splice(i, 1);
   },
-
   /* Drop every listener for one event, or all events when evt is omitted. */
   clear(evt) {
     if (typeof evt === 'string') { delete Bus._m[evt]; return; }
     Bus._m = Object.create(null);
   },
-
   /* Fire. data is normalised to an object. A throwing listener is warned
      about and skipped — one bad listener must never break the game loop. */
   emit(evt, data) {
@@ -445,29 +412,32 @@ const Bus = {
 
 /* ========================================================================= */
 
-/* Deterministic cultivator name. The same seed always yields the same string,
-   so duel NPC rosters can be regenerated from a seed instead of being saved.
-   surnames/givens/epithets come from DATA.names; each is optional and falls
-   back to a built-in list so this never throws during early boot.
-   Shape: 'Lin Xueyan' or, on a 40% roll, 'Lin Xueyan the Frostbound'. */
+/* Deterministic cultivator name — the same seed always yields the same string,
+   so a duel ladder can be regenerated from a seed instead of being saved.
+   Pass DATA.names.surnames / .givens / .epithets; each argument is optional and
+   falls back to a built-in list, so this never throws during early boot.
+   Epithets are joined with a plain space because DATA.names.epithets already
+   carry their own connector ('the Unswept', 'of the Late Frost', 'Nine-Cup').
+   Shape: 'Shen Qingzhi' or, on a 40% roll, 'Shen Qingzhi of the Late Frost'.
+   With the shipped 20 x 24 x 16 tables that is 480 x 17 = 8160 distinct names. */
 function uNameFrom(seed, surnames, givens, epithets) {
   const sList = (Array.isArray(surnames) && surnames.length)
     ? surnames
-    : ['Lin', 'Yun', 'Bai', 'Mu', 'Shen', 'Xiao', 'Chu', 'Han'];
+    : ['Shen', 'Yun', 'Bai', 'Mo', 'Luo', 'Xie', 'Gu', 'Wen'];
   const gList = (Array.isArray(givens) && givens.length)
     ? givens
-    : ['Feng', 'Yue', 'Chen', 'Ran', 'Qing', 'Wu', 'Ling', 'Zhen'];
+    : ['Qingzhi', 'Wanyu', 'Beiran', 'Yizhen', 'Muxue', 'Anluo', 'Jiuyin', 'Suqing'];
   const eList = Array.isArray(epithets) ? epithets : [];
 
   const rng = U.rngFrom(seed);
-  const sur = String(sList[Math.floor(rng() * sList.length) % sList.length] || 'Lin');
-  const giv = String(gList[Math.floor(rng() * gList.length) % gList.length] || 'Feng');
+  const sur = String(sList[Math.floor(rng() * sList.length) % sList.length] || 'Shen');
+  const giv = String(gList[Math.floor(rng() * gList.length) % gList.length] || 'Qingzhi');
   const roll = rng();
 
   let name = sur + ' ' + giv;
   if (eList.length > 0 && roll < 0.40) {
-    const ep = String(eList[Math.floor(rng() * eList.length) % eList.length] || '');
-    if (ep) name = name + ' the ' + ep;
+    const ep = String(eList[Math.floor(rng() * eList.length) % eList.length] || '').trim();
+    if (ep) name = name + ' ' + ep;
   }
   return name;
 }
