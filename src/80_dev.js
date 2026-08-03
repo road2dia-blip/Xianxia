@@ -252,6 +252,14 @@ const Dev = {
     return { text, trace };
   },
 
+  /* Gear the simulation does not actually forge.
+     The sim drives cultivation, respira, pills and techniques, but it does not
+     run the Wilds or the Forge, so its BR is that of a naked cultivator. A real
+     player clearing hunt stages keeps weapon/armour/pendant roughly current,
+     which measures at roughly +60% BR. Without this correction the sim stalls on
+     the tribulation gate and tells you nothing about the EXP curve. */
+  SIM_GEAR_FACTOR: 1.6,
+
   /* Auto-advance realms in the sim: assume the player wins tribulations when their
      BR meets the benchmark, and otherwise stalls (which is the honest outcome). */
   simAutoBreak() {
@@ -261,7 +269,7 @@ const Dev = {
       if (r >= CONFIG.cultivation.maxRealm) break;
       if (r >= CONFIG.breakthrough.chanceRealmMax + 1) {
         const want = CONFIG.breakthrough.benchmarkBR[r] * CONFIG.breakthrough.tribulationBRMult;
-        if (Stats.br() < want * 0.85) break;   // not strong enough yet — stall here
+        if (Stats.br() * this.SIM_GEAR_FACTOR < want) break;   // too weak — stall here
       }
       S.player.realm = r + 1;
       S.player.phase = 1;

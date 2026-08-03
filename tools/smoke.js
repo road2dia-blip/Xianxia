@@ -80,12 +80,20 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
   if (SHOTS) await page.screenshot({ path: path.join(SHOTDIR, '01-cultivate.png') });
 
   /* ------------------------------------------------- 3. EXP actually accrues */
-  const exp1 = await page.evaluate(() => (window.__ED && window.__ED.S) ? window.__ED.S.player.exp : null);
+  // S.player.exp resets to 0 on every phase-up, so measure overall progress
+  // (realm, then phase, then fraction of the current bar) rather than raw EXP.
+  const progress = () => page.evaluate(() => {
+    const ED = window.__ED; if (!ED || !ED.S) return null;
+    const p = ED.S.player;
+    const req = ED.Cultivation.phaseReq(p.realm, p.phase) || 1;
+    return p.realm * 1e6 + p.phase * 1e3 + Math.min(1, p.exp / req);
+  });
+  const pr1 = await progress();
   await page.waitForTimeout(2200);
-  const exp2 = await page.evaluate(() => (window.__ED && window.__ED.S) ? window.__ED.S.player.exp : null);
-  if (exp1 === null) fail('idle: debug handle window.__ED missing');
-  else if (exp2 > exp1) pass('idle: cultivation EXP accrues', `${exp1.toFixed(1)} -> ${exp2.toFixed(1)}`);
-  else fail('idle: cultivation EXP accrues', `${exp1} -> ${exp2}`);
+  const pr2 = await progress();
+  if (pr1 === null) fail('idle: debug handle window.__ED missing');
+  else if (pr2 > pr1) pass('idle: cultivation progress accrues', `${pr1.toFixed(3)} -> ${pr2.toFixed(3)}`);
+  else fail('idle: cultivation progress accrues', `${pr1} -> ${pr2}`);
 
   /* ------------------------------------------- 4. first breakthrough < 3 min */
   const bt = await page.evaluate(() => {
@@ -151,6 +159,30 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
   });
   overflow.length ? fail('layout: no horizontal scroll at 360px', overflow.join(' '))
                   : pass('layout: no horizontal scroll at 360px');
+
+  /* ------------------------- 7b. chrome stays pinned while the page scrolls */
+  const chrome = await page.evaluate(() => {
+    window.scrollTo(0, 99999);
+    const nav = document.querySelector('.nav');
+    const hud = document.querySelector('.hud');
+    const vh = window.innerHeight;
+    const n = nav && nav.getBoundingClientRect();
+    const h = hud && hud.getBoundingClientRect();
+    return {
+      navPos: nav && getComputedStyle(nav).position,
+      hudPos: hud && getComputedStyle(hud).position,
+      navOnScreen: !!(n && n.bottom <= vh + 1 && n.top >= vh - n.height - 1),
+      hudOnScreen: !!(h && h.top <= 1),
+      scrolled: window.scrollY,
+    };
+  });
+  (chrome.navPos === 'fixed' && chrome.navOnScreen)
+    ? pass('layout: bottom nav stays pinned when scrolled', `pos=${chrome.navPos}`)
+    : fail('layout: bottom nav stays pinned when scrolled', JSON.stringify(chrome));
+  (chrome.hudPos === 'sticky' && chrome.hudOnScreen)
+    ? pass('layout: HUD stays stuck to the top when scrolled')
+    : fail('layout: HUD stays stuck to the top when scrolled', JSON.stringify(chrome));
+  await page.evaluate(() => window.scrollTo(0, 0));
 
   /* ------------------------------------------------------ 8. tap target size */
   // Effective tap height = the element box, or an ::after hit expander if one

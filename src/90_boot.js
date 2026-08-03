@@ -125,22 +125,24 @@ const Boot = {
     // Harmless to ship: it exposes nothing a player could not already edit in
     // their own localStorage.
     try {
-      Object.defineProperty(window, '__ED', {
-        value: {
-          get S() { return S; },
-          set S(v) { S = v; },
-          CONFIG, DATA, DATAX, U, Fmt, Bus, UI, Save, Daily, Offline,
-          Stats, Econ, Combat, Boot, Creation,
-          get sys() {
-            const o = {};
-            for (const { name, sys } of Boot.systems) o[name] = sys;
-            return o;
-          },
-          get Cultivation() { return typeof Cultivation !== 'undefined' ? Cultivation : null; },
-          get Wilds() { return typeof Wilds !== 'undefined' ? Wilds : null; },
-          get Dev() { return typeof Dev !== 'undefined' ? Dev : null; },
+      const dbg = {
+        get S() { return S; },
+        set S(v) { S = v; },
+        CONFIG, DATA, DATAX, U, Fmt, Bus, UI, Save, Daily, Offline,
+        Stats, Econ, Combat, Boot, Creation,
+        get sys() {
+          const o = {};
+          for (const { name, sys } of Boot.systems) o[name] = sys;
+          return o;
         },
-        writable: false, enumerable: false, configurable: false,
+      };
+      // Expose every loaded system by its own name too, so tooling can reach
+      // __ED.Alchemy as readily as __ED.sys.Alchemy.
+      for (const { name, sys } of this.systems) {
+        if (!(name in dbg)) dbg[name] = sys;
+      }
+      Object.defineProperty(window, '__ED', {
+        value: dbg, writable: false, enumerable: false, configurable: false,
       });
     } catch (e) { /* non-fatal */ }
   },

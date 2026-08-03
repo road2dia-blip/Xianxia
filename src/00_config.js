@@ -60,8 +60,14 @@ const CONFIG = {
     tribulationBRMult: 1.1,    // Heart Demon BR = 1.1 x benchmarkBR[r]
     tribPillStatBonus: 0.12,   // each loaded pill = +12% stats in tribulation
     // Benchmark BR the game expects a player to have on entering realm r.
-    benchmarkBR: [120, 340, 1250, 5200, 24000, 118000,
-                  620000, 3.4e6, 1.9e7, 1.1e8, 6.4e8, 3.8e9],
+    // MEASURED, not guessed (tools/probe.js): this is 1.05x the BR of a phase-9
+    // player with NO techniques and NO gear. The Heart Demon at 1.1x benchmark
+    // is therefore ~15% above a bare cultivator — losable if you have ignored
+    // every system, comfortable once techniques and gear are in play.
+    // Player BR grows ~2.1x per realm, tracking cultivation.realmStatMult; any
+    // table growing faster than that makes late tribulations impossible to win.
+    benchmarkBR: [850, 1800, 3760, 7900, 16600, 34900,
+                  73000, 153000, 322000, 677000, 1.428e6, 2.99e6],
     eraAscensionRealms: [5, 9], // Incarnation->Voidbreak, Nirvana->Celestial
     gauntletFights: 3,
   },
@@ -72,7 +78,7 @@ const CONFIG = {
     wispLifeSec: 20,
     chargeSec: 30 * 60,
     baseCap: 8, capPerUpgrade: 2, maxCapUpgrades: 2,
-    expMinutes: 12,            // EXP = 12 min of current aura
+    expMinutes: 15,            // EXP = 15 min of current aura
     techPointsMin: 2, techPointsMax: 5,
     surgeChance: 0.08,
     surgeMult: 6,
@@ -92,7 +98,10 @@ const CONFIG = {
     maxQueueUpgrades: 2,       // Jade shop -> up to 5
     expPillMinutes: 45,        // spec: flat EXP = 45 min of that rank's base aura
     // ...plus a progress-relative floor so high-rank pills never go stale:
-    expPillPhaseFrac: 0.015,   // or 1.5% of current phase req, whichever is larger
+    expPillPhaseFrac: 0.035,   // or 3.5% of current phase req, whichever is larger.
+                               // Tuned by tools/probe.js: the flat term alone
+                               // leaves active play only ~1.6x idle in the mid
+                               // realms, because realmReqMult outgrows aura.
     permCapPerRealm: 10,       // Vital Powder / Mind Elixir uses per realm
     vitalHpPct: 0.012, vitalAtkPct: 0.012,
     mindMatkPct: 0.012, mindMpPct: 0.012,

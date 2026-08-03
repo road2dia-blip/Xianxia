@@ -72,7 +72,11 @@ a{color:var(--jade);text-decoration:none}
     radial-gradient(120% 60% at 12% -8%,rgba(53,208,160,.07),transparent 62%),
     radial-gradient(110% 55% at 92% 4%,rgba(176,122,224,.06),transparent 60%),
     radial-gradient(140% 44% at 50% 104%,rgba(232,199,106,.05),transparent 66%)}
-#app > *{position:relative;z-index:1}
+/* Lift direct children above the decorative #app::before mist. Must NOT touch
+   .hud (sticky) or .nav (fixed): an id selector outranks their own class rules,
+   so including them here strands the nav at the bottom of the document and
+   un-sticks the header. */
+#app > *:not(.hud):not(.nav){position:relative;z-index:1}
 
 /* ========================================================== 3. HUD ====== */
 .hud{position:sticky;top:0;z-index:40;padding:8px var(--pad);
