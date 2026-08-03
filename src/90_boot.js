@@ -171,7 +171,9 @@ const Boot = {
     }
 
     if (!returning) {
-      try { Story.beat && Story.beat('intro'); } catch (e) { console.error(e); }
+      try {
+        if (typeof Story !== 'undefined' && Story && Story.beat) Story.beat('intro');
+      } catch (e) { console.error(e); }
     }
     try { Save.saveNow(); } catch (e) { /* ignore */ }
   },

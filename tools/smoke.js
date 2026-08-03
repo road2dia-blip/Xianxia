@@ -38,6 +38,17 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
   });
   page.on('pageerror', e => errors.push('PAGEERROR: ' + (e && e.message ? e.message : String(e))));
 
+  // Tap through any open modal/sheet the way a player would (intro dialogue,
+  // offline-gains report, level-up notices).
+  const dismiss = async (max = 12) => {
+    for (let i = 0; i < max; i++) {
+      const btn = page.locator('#modalRoot .modal .btn, #sheetRoot .sheet .btn').last();
+      if (!(await btn.count())) return;
+      try { await btn.click({ timeout: 1500 }); } catch (e) { return; }
+      await page.waitForTimeout(140);
+    }
+  };
+
   console.log('\n=== EVERDAO smoke test ===\n');
   await page.goto(FILE, { waitUntil: 'load' });
   await page.waitForTimeout(900);
@@ -58,6 +69,7 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
     const begin = page.locator('.modal .btn.primary').first();
     await begin.click();
     await page.waitForTimeout(700);
+    await dismiss();
   }
   const created = await page.evaluate(() => {
     const el = document.getElementById('hudName');
@@ -93,6 +105,7 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
   else fail('balance: first breakthrough reachable', `${bt.sec}s idle, canBreak=${bt.canBreak}`);
 
   /* ------------------------------------------------- 5. navigate every panel */
+  await dismiss();
   const tabs = ['cultivate', 'wilds', 'battle', 'abode', 'more'];
   let navOk = true;
   for (const t of tabs) {
@@ -107,6 +120,7 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
   if (navOk) pass('nav: all 5 tabs activate');
 
   /* --------------------------------- 6. sub-panels reachable from More */
+  await dismiss();
   await page.click('.nav-btn[data-tab="more"]');
   await page.waitForTimeout(300);
   const subs = ['sect', 'techs', 'curios', 'shops', 'quests', 'pass', 'ach', 'mail', 'settings'];
@@ -123,6 +137,7 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
                   : pass('nav: all sub-panels reachable');
 
   /* -------------------------------------------- 7. no horizontal scroll @360 */
+  await dismiss();
   await ctx.pages()[0].setViewportSize({ width: 360, height: 780 });
   await page.waitForTimeout(400);
   const overflow = await page.evaluate(() => {
@@ -138,11 +153,20 @@ const fail = (n, d) => { results.push({ ok: false, n, d }); console.log(`  FAIL 
                   : pass('layout: no horizontal scroll at 360px');
 
   /* ------------------------------------------------------ 8. tap target size */
+  // Effective tap height = the element box, or an ::after hit expander if one
+  // covers it (a legitimate pattern for visually-compact buttons).
   const small = await page.evaluate(() => {
     const bad = [];
     document.querySelectorAll('.btn, .nav-btn, .tab').forEach(el => {
       const r = el.getBoundingClientRect();
-      if (r.height > 0 && r.height < 43.5) bad.push((el.className || '') + '|' + (el.textContent || '').trim().slice(0, 18));
+      if (r.height <= 0) return;
+      let eff = r.height;
+      const a = getComputedStyle(el, '::after');
+      if (a && a.content && a.content !== 'none' && a.position === 'absolute') {
+        const h = parseFloat(a.height);
+        if (h > eff) eff = h;
+      }
+      if (eff < 43.5) bad.push(`${el.className}|${(el.textContent || '').trim().slice(0, 18)}|${eff.toFixed(1)}px`);
     });
     return bad.slice(0, 8);
   });

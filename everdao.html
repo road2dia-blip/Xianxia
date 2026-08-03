@@ -16068,6 +16068,295 @@ const Tide = {
 };
 
 
+/* ===== 53_duel.js ======================================================== */
+/* ============================================================================
+ * Duel — the simulated PvP ladder. 200 named NPC rivals, no server.
+ *
+ * LADDER
+ *   S.duel.rank is 200 (worst) .. 1 (best). S.duel.npcs[i] holds the rival
+ *   currently sitting at rank i+1, so index 0 is rank 1.
+ *   You may challenge any of the CONFIG.duel.challengeRange (3) ranks above you;
+ *   a win swaps the two rank positions.
+ *
+ * NPC GENERATION
+ *   Deterministic from a per-save seed (U.hash of createdAt), so the roster is
+ *   stable across reloads without storing much: each entry keeps only
+ *   {name, path, realm, br}. BR is anchored to the benchmark for the realm the
+ *   rank implies, +/- CONFIG.duel.brVariance.
+ *
+ * DRIFT
+ *   Once per local day every NPC gains U.rand(3%, 6%) BR, so standing still
+ *   costs you rank over time. Drift is stamped by date string, so it fires once
+ *   even if the tab stays open across midnight.
+ *
+ * SEASONS
+ *   CONFIG.duel.seasonDays (14). At rollover: pay a season chest by tier, then
+ *   soft-compress every rank halfway back toward 200.
+ * ==========================================================================*/
+
+const Duel = {
+  _dom: null, _sig: '',
+
+  init() {
+    try { Bus.on('dailyReset', () => Duel.onNewDay()); } catch (e) { /* optional */ }
+    Duel.ensureRoster();
+  },
+
+  tick(dt) {
+    Duel._acc = (Duel._acc || 0) + dt;
+    if (Duel._acc < 10) return;
+    Duel._acc = 0;
+    Duel.ensureRoster();
+    Duel._badge();
+  },
+
+  badges() {
+    if (!S || S.player.realm < CONFIG.unlocks.duel) return 0;
+    return Math.max(0, Math.floor(Number(S.duel.duelTickets != null ? S.duel.duelTickets : S.daily.duelTickets) || 0));
+  },
+  _badge() { try { UI.badge('battle.duel', Duel.badges()); } catch (e) { /* pre-boot */ } },
+
+  /* ------------------------------------------------------------- roster */
+  ensureRoster() {
+    if (!S || !S.duel) return;
+    if (!Array.isArray(S.duel.npcs)) S.duel.npcs = [];
+    if (S.duel.npcs.length === CONFIG.duel.npcCount) return;
+
+    const seed = U.hash('duel' + (S.createdAt || 0));
+    const rng = U.rngFrom(seed);
+    const npcs = [];
+    const used = Object.create(null);
+    const paths = ['body', 'spell', 'sword', 'ghost'];
+
+    for (let i = 0; i < CONFIG.duel.npcCount; i++) {
+      const rank = i + 1;
+      // rank 1 sits about a realm above rank 200
+      const t = 1 - (i / CONFIG.duel.npcCount);            // 1 at the top, 0 at the bottom
+      const realm = U.clamp(Math.round(3 + t * 4), 0, CONFIG.cultivation.maxRealm);
+      const bench = CONFIG.breakthrough.benchmarkBR[realm] || 1000;
+      const br = Math.max(50, Math.round(bench * (0.55 + t * 0.75) * (1 + (rng() * 2 - 1) * CONFIG.duel.brVariance)));
+
+      let name = uNameFrom(seed + i * 7919, DATA.names.surnames, DATA.names.givens, DATA.names.epithets);
+      let guard = 0;
+      while (used[name] && guard++ < 24) {
+        name = uNameFrom(seed + i * 7919 + guard * 104729, DATA.names.surnames, DATA.names.givens, DATA.names.epithets);
+      }
+      used[name] = true;
+
+      npcs.push({ name, path: paths[Math.floor(rng() * 4)] || 'sword', realm, br });
+    }
+    S.duel.npcs = npcs;
+    if (!S.duel.seasonStart) S.duel.seasonStart = Date.now();
+    if (!(S.duel.rank > 0)) S.duel.rank = CONFIG.duel.npcCount;
+  },
+
+  tierOf(rank) {
+    for (const t of CONFIG.duel.tiers) if (rank <= t.maxRank) return t;
+    return CONFIG.duel.tiers[CONFIG.duel.tiers.length - 1];
+  },
+
+  /* -------------------------------------------------------- daily rollover */
+  onNewDay() {
+    Duel.ensureRoster();
+    const today = U.todayStr();
+    if (S.duel.lastDrift === today) return;
+    S.duel.lastDrift = today;
+
+    for (const n of S.duel.npcs) {
+      n.br = Math.round(n.br * (1 + U.rand(CONFIG.duel.driftMin, CONFIG.duel.driftMax)));
+    }
+
+    // daily payout by tier
+    const t = Duel.tierOf(S.duel.rank);
+    Mail.send({
+      subject: `Ladder stipend — ${t.name}`,
+      body: `For holding rank ${S.duel.rank}.`,
+      rewards: { jade: t.jade, stone: t.stone },
+    });
+
+    // season rollover
+    const days = (Date.now() - (S.duel.seasonStart || Date.now())) / 86400000;
+    if (days >= CONFIG.duel.seasonDays) {
+      const chest = { jade: t.jade * 6, stone: t.stone * 8, dust: 200 };
+      Mail.send({ subject: 'Season settled', body: `You finished at rank ${S.duel.rank} (${t.name}).`, rewards: chest });
+      // soft compression back toward the bottom
+      const c = CONFIG.duel.compression;
+      S.duel.rank = Math.round(S.duel.rank + (CONFIG.duel.npcCount - S.duel.rank) * c);
+      S.duel.seasonStart = Date.now();
+      UI.toast('A new duel season opens.', 'gold');
+    }
+    Duel._sig = '';
+    UI.dirty('battle');
+  },
+
+  /* ---------------------------------------------------------------- fights */
+  tickets() { return Math.max(0, Math.floor(Number(S.daily.duelTickets) || 0)); },
+
+  /* Build a combat unit for an NPC. */
+  unitFor(npc) {
+    // Solve a stat block whose BR matches npc.br, shaped by their path.
+    const path = CONFIG.paths[npc.path] || CONFIG.paths.sword;
+    const shape = { hp: 34, mp: 8, patk: 1, matk: 1, pdef: 0.7, mdef: 0.7, spd: 0.9 };
+    const probe = {};
+    for (const k in shape) probe[k] = shape[k] * (path[k] || 1);
+    let br0 = 0;
+    try { br0 = Stats.br(probe); } catch (e) { br0 = 1; }
+    const scale = br0 > 0 ? npc.br / br0 : 1;
+
+    const u = {
+      name: npc.name, emoji: Stats.pathEmoji ? Stats.pathEmoji(npc.path) : '\u{1F9D1}',
+      side: 'foe', element: null, path: npc.path,
+      crit: CONFIG.combat.baseCrit, critDmg: CONFIG.combat.baseCritDmg,
+      hit: CONFIG.combat.baseHit, dodge: 0, lifesteal: npc.path === 'body' ? 0.08 : 0,
+      skill: null, isPlayer: false,
+    };
+    for (const k in shape) u[k] = Math.max(1, Math.round(probe[k] * scale));
+    u.maxHp = u.hp; u.maxMp = u.mp;
+    try { u.skill = Stats.pathSkill ? Stats.pathSkill(npc.path) : null; } catch (e) { u.skill = null; }
+    return u;
+  },
+
+  challenge(idx) {
+    Duel.ensureRoster();
+    if (S.player.realm < CONFIG.unlocks.duel) { UI.toast('Not yet permitted.', 'bad'); return; }
+    if (Duel.tickets() <= 0) { UI.toast('No duel tickets left today.', 'bad'); return; }
+
+    const targetRank = S.duel.rank - (idx + 1);
+    if (targetRank < 1) { UI.toast('Nobody is above you.', 'bad'); return; }
+    const npc = S.duel.npcs[targetRank - 1];
+    if (!npc) return;
+
+    S.daily.duelTickets = Duel.tickets() - 1;
+    S.stats.duels = (S.stats.duels | 0) + 1;
+
+    const me = Stats.unit();
+    const foe = Duel.unitFor(npc);
+
+    Combat.play({
+      allies: [me], foes: [foe], title: `Rank ${targetRank} — ${npc.name}`,
+      canSkip: true,
+      opts: { lawProc: Duel._lawProc() },
+      onDone: (res) => Duel._resolve(res, npc, targetRank),
+    });
+  },
+
+  _lawProc() {
+    if (!S.player.law) return null;
+    let power = 1;
+    try { power = 1 + (Number(Stats.bonus('lawProc')) || 0) + CONFIG.law.procPerLevel * (S.player.lawLevel | 0); }
+    catch (e) { power = 1; }
+    return { law: S.player.law, power };
+  },
+
+  _resolve(res, npc, targetRank) {
+    const win = !!(res && res.win);
+    if (win) {
+      // swap positions: the beaten rival drops to where you were
+      const mine = S.duel.rank;
+      const beaten = S.duel.npcs[targetRank - 1];
+      S.duel.npcs[targetRank - 1] = beaten;      // occupant list is positional
+      // shift: you take targetRank, they take your old rank
+      const arr = S.duel.npcs;
+      const displaced = arr.splice(targetRank - 1, 1)[0];
+      arr.splice(Math.min(mine - 1, arr.length), 0, displaced);
+      S.duel.rank = targetRank;
+      S.duel.wins = (S.duel.wins | 0) + 1;
+      const t = Duel.tierOf(S.duel.rank);
+      Econ.grantAll({ jade: 4, stone: Math.round(t.stone / 6) });
+      UI.toast(`Rank ${targetRank}. ${npc.name} steps aside.`, 'gold');
+    } else {
+      S.duel.losses = (S.duel.losses | 0) + 1;
+      UI.toast(`${npc.name} holds the step.`, 'bad');
+    }
+    S.duel.snapshot = { br: Stats.br(), at: Date.now() };
+    Bus.emit('duelFight', { win, rank: S.duel.rank });
+    Duel._sig = '';
+    UI.dirty('battle');
+    UI.refreshBadges();
+    Save.save();
+  },
+
+  /* ---------------------------------------------------------------- panel */
+  renderInto(host) {
+    if (!host) return;
+    Duel.ensureRoster();
+    if (!Duel._dom || Duel._dom.host !== host || !host.contains(Duel._dom.root)) Duel._build(host);
+    Duel._patch();
+  },
+
+  _build(host) {
+    host.innerHTML = '';
+    const root = UI.el('div', 'col');
+    const head = UI.el('div', 'card tight');
+    head.innerHTML = `<div class="row between"><span class="lbl">Your standing</span>
+        <span class="val" data-f="rank"></span></div>
+      <div class="row between"><span class="tiny muted" data-f="tier"></span>
+        <span class="tiny muted" data-f="tickets"></span></div>
+      <div class="tiny muted" data-f="season"></div>`;
+    root.appendChild(head);
+    const list = UI.el('div', 'col');
+    root.appendChild(list);
+    host.appendChild(root);
+    Duel._dom = { host, root, head, list };
+    if (!root._wired) {
+      root._wired = true;
+      root.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-act="duel"]');
+        if (el) Duel.challenge(parseInt(el.dataset.idx, 10));
+      });
+    }
+  },
+
+  _patch() {
+    const d = Duel._dom;
+    if (!d) return;
+    const t = Duel.tierOf(S.duel.rank);
+    d.head.querySelector('[data-f="rank"]').textContent = '#' + S.duel.rank;
+    d.head.querySelector('[data-f="tier"]').textContent = `${t.name} · ${S.duel.wins | 0}W ${S.duel.losses | 0}L`;
+    d.head.querySelector('[data-f="tickets"]').textContent = `${Duel.tickets()} / ${CONFIG.duel.ticketsPerDay} tickets`;
+    const left = Math.max(0, CONFIG.duel.seasonDays - (Date.now() - (S.duel.seasonStart || Date.now())) / 86400000);
+    d.head.querySelector('[data-f="season"]').textContent = `Season ends in ${Fmt.dur(left * 86400)}`;
+
+    const sig = S.duel.rank + '|' + Duel.tickets() + '|' + (S.duel.wins | 0) + '|' + (S.duel.losses | 0);
+    if (sig === Duel._sig) return;
+    Duel._sig = sig;
+
+    d.list.innerHTML = '';
+    d.list.appendChild(UI.el('div', 'sec-title serif', 'Challengeable'));
+    let any = false;
+    const myBr = Stats.br();
+    for (let i = 0; i < CONFIG.duel.challengeRange; i++) {
+      const targetRank = S.duel.rank - (i + 1);
+      if (targetRank < 1) break;
+      const npc = S.duel.npcs[targetRank - 1];
+      if (!npc) continue;
+      any = true;
+      const b = UI.el('button', 'btn sm' + (Duel.tickets() > 0 ? ' primary' : ''), 'Duel');
+      b.disabled = Duel.tickets() <= 0;
+      b.dataset.act = 'duel'; b.dataset.idx = String(i);
+      const edge = npc.br > 0 ? myBr / npc.br : 1;
+      d.list.appendChild(UI.itemCard({
+        emoji: '\u{1F5E1}',
+        name: `#${targetRank} ${npc.name}`,
+        rarity: edge >= 1.15 ? 'green' : (edge >= 0.85 ? 'blue' : 'purple'),
+        sub: `BR ${Fmt.n(npc.br)} · yours ${Fmt.n(myBr)}`,
+        right: b,
+      }));
+    }
+    if (!any) d.list.appendChild(UI.el('div', 'empty', 'You stand at the very top. Enjoy the draught.'));
+
+    d.list.appendChild(UI.el('div', 'sec-title serif', 'Above you'));
+    for (let r = Math.max(1, S.duel.rank - 8); r < S.duel.rank; r++) {
+      const npc = S.duel.npcs[r - 1];
+      if (!npc) continue;
+      d.list.appendChild(UI.itemCard({
+        emoji: '·', name: `#${r} ${npc.name}`, rarity: 'gray', sub: `BR ${Fmt.n(npc.br)}`,
+      }));
+    }
+  },
+};
+
+
 /* ===== 54_abode.js ======================================================= */
 /* ---------------------------------------------------------------------------
  * Abode — the home base. Sub-tab HOST (Rooms | Alchemy | Forge | Garden | Farm)
@@ -17581,6 +17870,1092 @@ const Abode = {
       return '-' + Fmt.pct(1 - U.clamp(1 - CONFIG.abode.teaRoomFortuityBonus * lvl, 0.40, 1), 0) + ' fortuity wait';
     }
     return '';
+  },
+};
+
+
+/* ===== 55_alchemy.js ===================================================== */
+/* ============================================================================
+ * Alchemy — the Abode furnace: 6 formula ranks x 8 pill types, a craft queue,
+ * per-rank mastery, and every pill's consumption effect.
+ *
+ * FORMULAS
+ *   craftSec      = formula.craftSec * (1 - 0.08 * masteryLvl), floor 30s
+ *   masteryLvl    = highest i where masteryExp >= CONFIG.alchemy.masteryReq[i]
+ *   qualityRoll   = weightedPick(CONFIG.alchemy.qualityBase) with the mass shifted
+ *                   upward by  b = 0.05*masteryLvl + Stats.bonus('alchemyQuality'):
+ *                     w[0] = base[0] * max(0.15, 1 - 2b)
+ *                     w[i] = base[i] * (1 + 1.5*b*i)          for i > 0
+ *   potency       = CONFIG.alchemy.qualityMult[qi]  ->  1 / 1.4 / 2 / 3 / 4.5
+ *
+ * EXP PILL (the daily bread) — spends one of the day's Pill Attempts:
+ *   exp = max( 45min * auraBase * auraGrowth^rank ,               (spec section 5)
+ *              phaseReq(realm, phase) * 0.015 )                   (relevance floor)
+ *         * potency * (1 + Stats.bonus('pillExp'))
+ *   The second term keeps a rank-6 pill meaningful once flat rank aura has been
+ *   outgrown; without it high-realm pills decay to rounding error.
+ *
+ * PERMANENT PILLS  Vital Powder / Mind Elixir: +1.2% of base per use, capped at
+ *   CONFIG.alchemy.permCapPerRealm (10) uses per realm, tracked per realm index.
+ * ==========================================================================*/
+
+const Alchemy = {
+  QUALS: ['gray', 'green', 'blue', 'purple', 'yellow'],
+  _dom: null,
+  _sel: null,          // selected formula id in the craft sheet
+  _lastSig: '',
+
+  /* ------------------------------------------------------------------ init */
+  init() {
+    try { Offline.provider((sec) => this._offline(sec)); } catch (e) { /* optional */ }
+    try {
+      Bus.on('breakthrough', () => { this._lastSig = ''; UI.dirty('abode'); });
+    } catch (e) { /* optional */ }
+  },
+
+  tick() {
+    if (!S || !S.alchemy) return;
+    const now = Date.now();
+    let changed = false;
+    const q = this._queue();
+    for (const job of q) {
+      if (job.quality === null && job.endAt <= now) { this._finish(job); changed = true; }
+    }
+    if (this._assistant()) changed = this._autoStart() || changed;
+    if (changed) { this._lastSig = ''; UI.dirty('abode'); this._badge(); }
+  },
+
+  badges() { return this._readyCount(); },
+
+  /* ------------------------------------------------------------- accessors */
+  _queue() {
+    if (!S.alchemy.queue || !Array.isArray(S.alchemy.queue)) S.alchemy.queue = [];
+    return S.alchemy.queue;
+  },
+  queueMax() {
+    const up = Math.floor(Number(S.alchemy.queueUp) || 0);
+    return CONFIG.alchemy.queueSize + U.clamp(up, 0, CONFIG.alchemy.maxQueueUpgrades);
+  },
+  _assistant() { return !!(S.alchemy && S.alchemy.assistant); },
+  _readyCount() {
+    let n = 0;
+    for (const j of this._queue()) if (j.quality !== null) n++;
+    return n;
+  },
+  _badge() { try { UI.badge('abode.alchemy', this._readyCount()); } catch (e) { /* pre-boot */ } },
+
+  masteryOf(rank) {
+    if (!S.alchemy.mastery || typeof S.alchemy.mastery !== 'object') S.alchemy.mastery = {};
+    let m = S.alchemy.mastery[rank];
+    if (!m || typeof m !== 'object') { m = { lvl: 0, exp: 0 }; S.alchemy.mastery[rank] = m; }
+    if (!Number.isFinite(m.lvl)) m.lvl = 0;
+    if (!Number.isFinite(m.exp)) m.exp = 0;
+    return m;
+  },
+  masteryName(rank) {
+    const m = this.masteryOf(rank);
+    return CONFIG.alchemy.masteryLevels[U.clamp(m.lvl, 0, CONFIG.alchemy.masteryLevels.length - 1)];
+  },
+
+  /* Formulas the player knows, usable at their realm. */
+  known() {
+    const ids = (S.inv && Array.isArray(S.inv.formulas)) ? S.inv.formulas : [];
+    const out = [];
+    for (const id of ids) {
+      const f = DATAX.formulaById[id];
+      if (f) out.push(f);
+    }
+    out.sort((a, b) => (a.rank - b.rank) || String(a.type).localeCompare(String(b.type)));
+    return out;
+  },
+
+  craftSec(f) {
+    const m = this.masteryOf(f.rank);
+    const mult = Math.max(0.3, 1 - CONFIG.alchemy.masterySpeedBonus * m.lvl);
+    return Math.max(30, Math.round((Number(f.craftSec) || 300) * mult));
+  },
+
+  /* -------------------------------------------------------------- crafting */
+  canCraft(f) {
+    if (!f) return false;
+    if (this._queue().length >= this.queueMax()) return false;
+    return Econ.spend ? this._affordable(f.cost) : false;
+  },
+  _affordable(cost) {
+    for (const k in (cost || {})) {
+      const n = Math.floor(Number(cost[k]) || 0);
+      if (n > 0 && !Econ.can(k, n)) return false;
+    }
+    return true;
+  },
+
+  startCraft(formulaId) {
+    const f = DATAX.formulaById[formulaId];
+    if (!f) return false;
+    if (this._queue().length >= this.queueMax()) { UI.toast('The furnace is full.', 'bad'); return false; }
+    if (!this._affordable(f.cost)) { UI.toast('Not enough materials.', 'bad'); return false; }
+    if (!Econ.spend(f.cost)) { UI.toast('Not enough materials.', 'bad'); return false; }
+
+    this._queue().push({ formulaId: f.id, endAt: Date.now() + this.craftSec(f) * 1000, quality: null });
+    UI.toast('The furnace is lit.', 'good');
+    this._lastSig = '';
+    UI.dirty('abode');
+    return true;
+  },
+
+  /* Roll quality and mark the job collectable. */
+  _finish(job) {
+    const f = DATAX.formulaById[job.formulaId];
+    if (!f) { job.quality = 'gray'; return; }
+
+    let b = 0;
+    try { b = Number(Stats.bonus('alchemyQuality')) || 0; } catch (e) { b = 0; }
+    b += CONFIG.alchemy.masteryQualityShift * this.masteryOf(f.rank).lvl;
+
+    const base = CONFIG.alchemy.qualityBase;
+    const w = base.map((v, i) => (i === 0 ? v * Math.max(0.15, 1 - 2 * b) : v * (1 + 1.5 * b * i)));
+    const total = w.reduce((a, c) => a + c, 0);
+    let roll = Math.random() * total;
+    let qi = 0;
+    for (let i = 0; i < w.length; i++) { roll -= w[i]; if (roll <= 0) { qi = i; break; } }
+    job.quality = this.QUALS[qi];
+
+    // mastery
+    const m = this.masteryOf(f.rank);
+    m.exp += CONFIG.alchemy.masteryExpPerCraft;
+    const req = CONFIG.alchemy.masteryReq;
+    let lvl = 0;
+    for (let i = 0; i < req.length; i++) if (m.exp >= req[i]) lvl = i;
+    if (lvl > m.lvl) {
+      m.lvl = lvl;
+      UI.toast(`Alchemy Mastery R${f.rank}: ${this.masteryName(f.rank)}`, 'gold');
+    }
+  },
+
+  collect(idx) {
+    const q = this._queue();
+    const job = q[idx];
+    if (!job || job.quality === null) return false;
+    const f = DATAX.formulaById[job.formulaId];
+    q.splice(idx, 1);
+    if (!f) return false;
+
+    const key = f.id + '_' + job.quality;
+    if (!S.inv.pills || typeof S.inv.pills !== 'object') S.inv.pills = {};
+    S.inv.pills[key] = (Math.floor(Number(S.inv.pills[key])) || 0) + 1;
+    S.stats.pillsCrafted = (S.stats.pillsCrafted | 0) + 1;
+
+    Bus.emit('pillCrafted', { formulaId: f.id, rank: f.rank, quality: job.quality });
+    UI.toast(`${f.emoji || '\u{1F48A}'} ${f.name} (${job.quality})`, job.quality === 'yellow' ? 'gold' : 'good');
+    if (job.quality === 'yellow') { try { UI.flash('gold'); } catch (e) { /* optional */ } }
+
+    this._lastSig = '';
+    UI.dirty('abode', 'cultivate');
+    this._badge();
+    return true;
+  },
+
+  collectAll() {
+    let n = 0;
+    for (let i = this._queue().length - 1; i >= 0; i--) if (this.collect(i)) n++;
+    if (!n) UI.toast('Nothing is ready.', 'bad');
+    return n;
+  },
+
+  /* Alchemy Assistant: refill empty queue slots with the last-crafted formula. */
+  _autoStart() {
+    const q = this._queue();
+    if (q.length >= this.queueMax()) return false;
+    const last = S.alchemy.lastFormula;
+    if (!last) return false;
+    const f = DATAX.formulaById[last];
+    if (!f || !this._affordable(f.cost)) return false;
+    if (!Econ.spend(f.cost)) return false;
+    q.push({ formulaId: f.id, endAt: Date.now() + this.craftSec(f) * 1000, quality: null });
+    return true;
+  },
+
+  /* -------------------------------------------------------------- offline */
+  /* Craft jobs finish on their own absolute endAt, so offline is report-only. */
+  _offline(sec) {
+    if (!S || !S.alchemy) return [];
+    const now = Date.now();
+    let done = 0;
+    for (const job of this._queue()) {
+      if (job.quality === null && job.endAt <= now) { this._finish(job); done++; }
+    }
+    if (this._assistant()) { let guard = 0; while (this._autoStart() && guard++ < 20) { /* fill */ } }
+    this._badge();
+    return done ? [{ label: 'Pills finished', icon: '\u{1F48A}', amount: '+' + done }] : [];
+  },
+
+  /* ============================================================ CONSUMPTION */
+
+  pillCount(type, minQuality) {
+    const minQi = minQuality ? this.QUALS.indexOf(minQuality) : 0;
+    let n = 0;
+    for (const key in (S.inv.pills || {})) {
+      const c = Math.floor(Number(S.inv.pills[key]) || 0);
+      if (c <= 0) continue;
+      const cut = key.lastIndexOf('_');
+      if (cut <= 0) continue;
+      const f = DATAX.formulaById[key.slice(0, cut)];
+      if (!f || (type && f.type !== type)) continue;
+      if (this.QUALS.indexOf(key.slice(cut + 1)) < minQi) continue;
+      n += c;
+    }
+    return n;
+  },
+
+  _take(key) {
+    const inv = S.inv && S.inv.pills;
+    if (!inv || !(inv[key] > 0)) return null;
+    const cut = String(key).lastIndexOf('_');
+    if (cut <= 0) return null;
+    const f = DATAX.formulaById[key.slice(0, cut)];
+    if (!f) return null;
+    const q = key.slice(cut + 1);
+    const qi = Math.max(0, this.QUALS.indexOf(q));
+    inv[key] -= 1;
+    if (inv[key] <= 0) delete inv[key];
+    return { f, q, qi, potency: CONFIG.alchemy.qualityMult[qi] || 1 };
+  },
+
+  /* Consume one pill by inventory key. Returns true when it was used.
+     Every pill type routes through here so the daily caps and Bus events stay
+     in one place. */
+  usePill(key) {
+    if (!S || !S.inv || !S.inv.pills || !S.inv.pills[key]) return false;
+    const cut = String(key).lastIndexOf('_');
+    const peek = cut > 0 ? DATAX.formulaById[key.slice(0, cut)] : null;
+    if (!peek) return false;
+
+    // EXP pills are the only type gated by the daily attempt budget.
+    if (peek.type === 'exp') {
+      const used = Math.floor(Number(S.daily.pillAttemptsUsed) || 0);
+      const max = Cultivation.pillAttemptsMax();
+      if (used >= max) { UI.toast('No pill attempts left today.', 'bad'); return false; }
+    }
+
+    const got = this._take(key);
+    if (!got) return false;
+    const { f, q, qi, potency } = got;
+
+    switch (f.type) {
+      case 'exp': {
+        S.daily.pillAttemptsUsed = (Math.floor(Number(S.daily.pillAttemptsUsed) || 0)) + 1;
+        const flat = CONFIG.alchemy.expPillMinutes * 60 *
+          CONFIG.cultivation.aura.base * Math.pow(CONFIG.cultivation.aura.growth, f.rank);
+        const rel = Cultivation.phaseReq(S.player.realm, S.player.phase) * CONFIG.alchemy.expPillPhaseFrac;
+        let exp = Math.max(flat, rel) * potency;
+        try { exp *= (1 + (Number(Stats.bonus('pillExp')) || 0)); } catch (e) { /* none */ }
+        Cultivation.addExp(exp, 'pill');
+        UI.toast(`+${Fmt.n(exp)} aura`, 'good');
+        break;
+      }
+      case 'vital': {
+        if (!this._permOk('vital')) { this._refund(key); return false; }
+        const amt = CONFIG.alchemy.vitalHpPct * potency;
+        Stats.addPerm('hp', amt);
+        Stats.addPerm('patk', CONFIG.alchemy.vitalAtkPct * potency);
+        this._permUse('vital');
+        UI.toast('Your frame thickens.', 'good');
+        break;
+      }
+      case 'mind': {
+        if (!this._permOk('mind')) { this._refund(key); return false; }
+        Stats.addPerm('matk', CONFIG.alchemy.mindMatkPct * potency);
+        Stats.addPerm('mp', CONFIG.alchemy.mindMpPct * potency);
+        this._permUse('mind');
+        UI.toast('Your thoughts run clearer.', 'good');
+        break;
+      }
+      case 'bt': {
+        // Loading is handled by the breakthrough panel; using it directly just
+        // stages it for the next attempt.
+        if (!Array.isArray(S.bt.loaded)) S.bt.loaded = [];
+        if (S.bt.loaded.length >= CONFIG.breakthrough.maxPills) {
+          this._refund(key);
+          UI.toast('Already holding three.', 'bad');
+          return false;
+        }
+        S.bt.loaded.push(key);
+        UI.toast('Pill readied for the breakthrough.', 'good');
+        break;
+      }
+      case 'bait': {
+        const now = Date.now();
+        const base = Math.max(now, Number(S.alchemy.baitUntil) || 0);
+        S.alchemy.baitUntil = base + CONFIG.alchemy.baitDurationSec * 1000;
+        UI.toast('The scent will draw beasts for a while.', 'good');
+        break;
+      }
+      // meridian / ward / fury are consumed by Combat at the point of use;
+      // reaching here means the player tapped it outside a fight.
+      case 'meridian': case 'ward': case 'fury': {
+        this._refund(key);
+        UI.toast('Save that for a fight.', 'bad');
+        return false;
+      }
+      default: break;
+    }
+
+    Bus.emit('pillUsed', { formulaId: f.id, type: f.type, rank: f.rank, quality: q });
+    Stats.invalidate();
+    Stats.recompute();
+    this._lastSig = '';
+    UI.dirty('cultivate', 'abode');
+    UI.refreshBadges();
+    return true;
+  },
+
+  _refund(key) {
+    if (!S.inv.pills) S.inv.pills = {};
+    S.inv.pills[key] = (Math.floor(Number(S.inv.pills[key])) || 0) + 1;
+  },
+  _permOk(kind) {
+    const r = String(S.player.realm | 0);
+    const uses = ((S.player.pillUses || {})[kind] || {})[r] || 0;
+    if (uses >= CONFIG.alchemy.permCapPerRealm) {
+      UI.toast(`This realm can take no more (${CONFIG.alchemy.permCapPerRealm}/realm).`, 'bad');
+      return false;
+    }
+    return true;
+  },
+  _permUse(kind) {
+    if (!S.player.pillUses) S.player.pillUses = { vital: {}, mind: {} };
+    if (!S.player.pillUses[kind]) S.player.pillUses[kind] = {};
+    const r = String(S.player.realm | 0);
+    S.player.pillUses[kind][r] = (S.player.pillUses[kind][r] || 0) + 1;
+  },
+
+  /* ================================================================= PANEL */
+  /* Abode owns the panel; it calls renderInto(host) on every render pass with
+     the same host, so build once and patch. */
+  renderInto(host) {
+    if (!host) return;
+    if (!this._dom || this._dom.host !== host || !host.contains(this._dom.root)) this._build(host);
+    this._patch();
+  },
+
+  _build(host) {
+    host.innerHTML = '';
+    const root = UI.el('div', 'col');
+
+    const st = UI.el('div', 'card tight');
+    st.innerHTML = `<div class="row between">
+        <span class="lbl">Furnace</span><span class="val" data-f="slots"></span></div>
+      <div class="tiny muted" data-f="mastery"></div>`;
+    root.appendChild(st);
+
+    const queue = UI.el('div', 'col');
+    root.appendChild(queue);
+
+    const actions = UI.el('div', 'row');
+    const bCraft = UI.el('button', 'btn primary wide', 'Craft a Pill');
+    bCraft.dataset.act = 'al-open';
+    const bAll = UI.el('button', 'btn wide', 'Collect All');
+    bAll.dataset.act = 'al-all';
+    actions.appendChild(bCraft); actions.appendChild(bAll);
+    root.appendChild(actions);
+
+    const shelf = UI.el('div', 'col');
+    root.appendChild(shelf);
+
+    host.appendChild(root);
+    this._dom = { host, root, st, queue, shelf, bAll };
+
+    if (!root._wired) {
+      root._wired = true;
+      root.addEventListener('click', (e) => this._onClick(e));
+    }
+  },
+
+  _patch() {
+    const d = this._dom;
+    if (!d) return;
+    const q = this._queue();
+    const now = Date.now();
+
+    d.st.querySelector('[data-f="slots"]').textContent = `${q.length}/${this.queueMax()}`;
+    const ranks = [];
+    for (let r = 1; r <= CONFIG.alchemy.ranks; r++) {
+      const m = this.masteryOf(r);
+      if (m.exp > 0) ranks.push(`R${r} ${this.masteryName(r)}`);
+    }
+    d.st.querySelector('[data-f="mastery"]').textContent =
+      ranks.length ? ranks.join(' · ') : 'No mastery yet — craft to learn.';
+
+    // queue rows (rebuilt only when the shape changes)
+    const sig = q.map(j => j.formulaId + (j.quality || Math.ceil((j.endAt - now) / 1000))).join('|')
+      + '#' + Object.keys(S.inv.pills || {}).map(k => k + (S.inv.pills[k] || 0)).join(',');
+    if (sig !== this._lastSig) {
+      this._lastSig = sig;
+      d.queue.innerHTML = '';
+      if (!q.length) d.queue.appendChild(UI.el('div', 'empty', 'The furnace is cold.'));
+      for (let i = 0; i < q.length; i++) {
+        const job = q[i];
+        const f = DATAX.formulaById[job.formulaId];
+        const ready = job.quality !== null;
+        const right = UI.el('button', 'btn sm' + (ready ? ' primary' : ''),
+          ready ? 'Collect' : Fmt.durShort(Math.max(0, (job.endAt - now) / 1000)));
+        if (ready) { right.dataset.act = 'al-take'; right.dataset.idx = String(i); }
+        else right.disabled = true;
+        d.queue.appendChild(UI.itemCard({
+          emoji: (f && f.emoji) || '\u{1F9EA}',
+          name: (f && f.name) || 'Unknown brew',
+          rarity: ready ? job.quality : 'gray',
+          sub: ready ? `Ready — ${job.quality}` : `Rank ${(f && f.rank) || '?'}`,
+          right,
+        }));
+      }
+      this._buildShelf(d.shelf);
+    } else {
+      // cheap path: just retick the countdown labels
+      const btns = d.queue.querySelectorAll('.btn.sm[disabled]');
+      let bi = 0;
+      for (let i = 0; i < q.length; i++) {
+        if (q[i].quality !== null) continue;
+        const b = btns[bi++];
+        if (b) b.textContent = Fmt.durShort(Math.max(0, (q[i].endAt - now) / 1000));
+      }
+    }
+    d.bAll.disabled = this._readyCount() === 0;
+  },
+
+  /* The pill shelf: everything owned, tappable to use. */
+  _buildShelf(host) {
+    host.innerHTML = '';
+    const inv = S.inv.pills || {};
+    const keys = Object.keys(inv).filter(k => inv[k] > 0);
+    host.appendChild(UI.el('div', 'sec-title serif', 'Pill Shelf'));
+    if (!keys.length) { host.appendChild(UI.el('div', 'empty', 'No pills yet.')); return; }
+
+    keys.sort();
+    for (const key of keys) {
+      const cut = key.lastIndexOf('_');
+      const f = DATAX.formulaById[key.slice(0, cut)];
+      if (!f) continue;
+      const q = key.slice(cut + 1);
+      const btn = UI.el('button', 'btn sm', 'Use');
+      btn.dataset.act = 'al-use'; btn.dataset.id = key;
+      host.appendChild(UI.itemCard({
+        emoji: f.emoji || '\u{1F48A}', name: f.name, rarity: q,
+        sub: `${f.desc || ''} — x${CONFIG.alchemy.qualityMult[this.QUALS.indexOf(q)] || 1} potency`,
+        right: btn, id: key,
+      }));
+      const tag = host.lastChild.querySelector('.h2');
+      if (tag) tag.textContent = `${f.name} x${inv[key]}`;
+    }
+  },
+
+  _onClick(e) {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    const act = el.dataset.act;
+    if (act === 'al-open') { this.openCraftSheet(); return; }
+    if (act === 'al-all') { this.collectAll(); return; }
+    if (act === 'al-take') { this.collect(parseInt(el.dataset.idx, 10)); return; }
+    if (act === 'al-use') { this.usePill(el.dataset.id); return; }
+  },
+
+  /* ------------------------------------------------------- craft sheet */
+  openCraftSheet() {
+    const list = this.known();
+    const body = document.createElement('div');
+    if (!list.length) {
+      body.appendChild(UI.el('div', 'empty', 'You know no formulas. The Market and the Sect Library sell them.'));
+      UI.sheet({ title: 'Craft', body, buttons: [{ label: 'Close', cls: 'ghost', act: (c) => c() }] });
+      return;
+    }
+
+    for (const f of list) {
+      const wrap = UI.el('div', 'card tight');
+      const head = UI.el('div', 'row between');
+      head.appendChild(UI.el('div', 'h2', `${f.emoji || '\u{1F48A}'} ${f.name}`));
+      head.appendChild(UI.el('span', 'chip', `R${f.rank}`));
+      wrap.appendChild(head);
+      wrap.appendChild(UI.el('div', 'tiny muted', f.desc || ''));
+      wrap.appendChild(UI.costRow(f.cost));
+
+      const foot = UI.el('div', 'row between');
+      foot.appendChild(UI.el('span', 'tiny muted', Fmt.dur(this.craftSec(f))));
+      const b = UI.el('button', 'btn sm primary', 'Craft');
+      b.dataset.act = 'craft'; b.dataset.id = f.id;
+      if (!this._affordable(f.cost) || this._queue().length >= this.queueMax()) b.disabled = true;
+      foot.appendChild(b);
+      wrap.appendChild(foot);
+      body.appendChild(wrap);
+    }
+
+    const sheet = UI.sheet({ title: 'Craft a Pill', body,
+      buttons: [{ label: 'Close', cls: 'ghost', act: (c) => c() }] });
+
+    body.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act="craft"]');
+      if (!b) return;
+      if (this.startCraft(b.dataset.id)) {
+        S.alchemy.lastFormula = b.dataset.id;
+        try { UI.closeSheet ? UI.closeSheet(sheet) : UI.closeTop(); } catch (err) { /* fine */ }
+      }
+    });
+  },
+};
+
+
+/* ===== 56_forge.js ======================================================= */
+/* ============================================================================
+ * Forge — gear and relic crafting, equipping, enhancing, refining, salvaging.
+ *
+ * ITEM SHAPE (stored in S.inv.gear)
+ *   { uid, base, slot, rank, rarity, lvl, star, affixes:[{k,v,pct}] }
+ *     base  = DATA.gearBases id, or DATA.relics id when slot === 'relic'
+ *     lvl   = enhance level 0..15      star = refine stars 0..5
+ *
+ * FORMULAS
+ *   rarityMult  = [1, 1.25, 1.6, 2.1, 2.9]           gray..gold
+ *   enhanceMult = 1 + 0.04 * lvl                      (CONFIG.forge.enhancePerLevel)
+ *   starMult    = 1.10 ^ star                         (CONFIG.forge.refinePerStar)
+ *   mainStat    = base.main.val * rarityMult * enhanceMult * starMult
+ *   enhanceCost = round(25 * 1.38^lvl)  Forge Stones  (CONFIG.forge.enhanceCost*)
+ *
+ * FORGING PITY (spec section 12)
+ *   Each craft adds CONFIG.forge.pityByTier[tier-1] points (1 / 5 / 20 by tier band).
+ *   At >= 600 the next craft is a guaranteed gold and spends 600.
+ *   At >= 100 the next craft is a guaranteed purple-or-better and spends 100.
+ *   Points are only spent when the guarantee actually fires.
+ * ==========================================================================*/
+
+const Forge = {
+  RARITIES: ['gray', 'green', 'blue', 'purple', 'gold'],
+  RARITY_MULT: [1, 1.25, 1.6, 2.1, 2.9],
+  SLOTS: ['weapon', 'armor', 'pendant'],
+  RELIC_SLOTS: ['relicA', 'relicB', 'relicC'],
+  _dom: null,
+  _sig: '',
+
+  init() {
+    try { Stats.provider(Forge.equippedBonus); } catch (e) { /* optional */ }
+  },
+  tick() {},
+  badges() { return 0; },
+
+  /* ----------------------------------------------------------- item maths */
+  baseOf(item) {
+    if (!item) return null;
+    return item.slot === 'relic' ? DATAX.relicById[item.base] : DATAX.gearById[item.base];
+  },
+  rarityIdx(r) { const i = Forge.RARITIES.indexOf(r); return i < 0 ? 0 : i; },
+
+  mult(item) {
+    const ri = Forge.rarityIdx(item.rarity);
+    const lvl = U.clamp(Math.floor(Number(item.lvl) || 0), 0, CONFIG.forge.enhanceMax);
+    const star = U.clamp(Math.floor(Number(item.star) || 0), 0, CONFIG.forge.refineMaxStar);
+    return (Forge.RARITY_MULT[ri] || 1)
+      * (1 + CONFIG.forge.enhancePerLevel * lvl)
+      * Math.pow(1 + CONFIG.forge.refinePerStar, star);
+  },
+
+  /* Flat stat contribution of one item. Stats._gearFlats sums these. */
+  itemStats(item) {
+    const out = { hp: 0, mp: 0, patk: 0, matk: 0, pdef: 0, mdef: 0, spd: 0 };
+    if (!item) return out;
+    const b = Forge.baseOf(item);
+    if (!b) return out;
+    const m = Forge.mult(item);
+
+    if (item.slot !== 'relic' && b.main && b.main.stat) {
+      const k = b.main.stat;
+      if (out[k] !== undefined) out[k] += (Number(b.main.val) || 0) * m;
+    }
+    for (const a of (item.affixes || [])) {
+      if (a && !a.pct && out[a.k] !== undefined) out[a.k] += (Number(a.v) || 0) * m;
+    }
+    return out;
+  },
+
+  /* Percentage bonuses from equipped gear and relics. Registered as a Stats
+     provider, so Stats._gearProvider stands down and nothing double-counts. */
+  equippedBonus(acc) {
+    if (typeof S === 'undefined' || !S || !S.equipped) return;
+    const gear = (S.inv && Array.isArray(S.inv.gear)) ? S.inv.gear : [];
+    if (!gear.length) return;
+    const byUid = Object.create(null);
+    for (const it of gear) if (it && it.uid != null) byUid[String(it.uid)] = it;
+
+    for (const slot of Forge.SLOTS.concat(Forge.RELIC_SLOTS)) {
+      const uid = S.equipped[slot];
+      if (uid === null || uid === undefined || uid === '') continue;
+      const it = byUid[String(uid)];
+      if (!it) continue;
+
+      const m = Forge.mult(it);
+      for (const a of (it.affixes || [])) {
+        if (a && a.pct && acc[a.k] !== undefined) acc[a.k] += (Number(a.v) || 0) * m;
+      }
+      if (it.slot === 'relic') {
+        const b = DATAX.relicById[it.base];
+        if (b && b.effect && acc[b.effect.key] !== undefined) {
+          acc[b.effect.key] += (Number(b.effect.val) || 0) * m;
+        }
+      }
+    }
+  },
+
+  br(item) {
+    try { return Stats.br(Object.assign({ crit: 0, critDmg: 0 }, Forge.itemStats(item))); }
+    catch (e) { return 0; }
+  },
+
+  /* ------------------------------------------------------------- crafting */
+  craftCost(rank, slot) {
+    const cost = { stone: Math.round(300 * Math.pow(4.5, rank - 1)) };
+    cost['forge:' + rank] = 3 + rank + (slot === 'relic' ? 2 : 0);
+    return cost;
+  },
+
+  blueprintsOwned() {
+    const ids = (S.inv && Array.isArray(S.inv.blueprints)) ? S.inv.blueprints : [];
+    const out = [];
+    for (const id of ids) {
+      const bp = DATA.blueprints.find(b => b.id === id);
+      if (bp) out.push(bp);
+    }
+    out.sort((a, b) => (a.rank - b.rank) || String(a.slot).localeCompare(String(b.slot)));
+    return out;
+  },
+
+  /* Roll rarity, honouring the pity guarantees. Returns a rarity string. */
+  _rollRarity(rank) {
+    const pity = Math.max(0, Math.floor(Number(S.forge.pity) || 0));
+    if (pity >= CONFIG.forge.pityGold) {
+      S.forge.pity = pity - CONFIG.forge.pityGold;
+      return 'gold';
+    }
+    if (pity >= CONFIG.forge.pityPurple) {
+      S.forge.pity = pity - CONFIG.forge.pityPurple;
+      return U.chance(0.18) ? 'gold' : 'purple';
+    }
+    let b = 0;
+    try { b = Number(Stats.bonus('forgeQuality')) || 0; } catch (e) { b = 0; }
+    const base = CONFIG.forge.qualityBase;
+    const w = base.map((v, i) => (i === 0 ? v * Math.max(0.15, 1 - 2 * b) : v * (1 + 1.5 * b * i)));
+    const total = w.reduce((a, c) => a + c, 0);
+    let roll = Math.random() * total;
+    for (let i = 0; i < w.length; i++) { roll -= w[i]; if (roll <= 0) return Forge.RARITIES[i]; }
+    return 'gray';
+  },
+
+  _rollAffixes(rarity, rank) {
+    const n = CONFIG.forge.rarityAffixes[Forge.rarityIdx(rarity)] || 1;
+    const pool = U.shuffle(DATA.affixes);
+    const out = [];
+    for (let i = 0; i < n && i < pool.length; i++) {
+      const a = pool[i];
+      const lo = Number(a.min) || 0, hi = Number(a.max) || 0;
+      let v = U.rand(lo, hi);
+      if (!a.pct) v = Math.max(1, Math.round(v * Math.pow(2.6, rank - 1)));
+      else v = Math.round(v * 10000) / 10000;
+      out.push({ k: a.key, v, pct: !!a.pct });
+    }
+    return out;
+  },
+
+  craft(blueprintId) {
+    const bp = DATA.blueprints.find(b => b.id === blueprintId);
+    if (!bp) return false;
+    const cost = Forge.craftCost(bp.rank, bp.slot);
+    if (!Econ.spend(cost)) { UI.toast('Not enough materials.', 'bad'); return false; }
+
+    // pity accrual by the material tier consumed
+    const add = CONFIG.forge.pityByTier[U.clamp(bp.rank - 1, 0, CONFIG.forge.pityByTier.length - 1)] || 1;
+    S.forge.pity = (Math.floor(Number(S.forge.pity) || 0)) + add;
+
+    const rarity = Forge._rollRarity(bp.rank);
+
+    let base;
+    if (bp.slot === 'relic') {
+      const cands = DATA.relics.filter(r => r.rank === bp.rank);
+      base = U.pick(cands.length ? cands : DATA.relics);
+    } else {
+      const cands = DATA.gearBases.filter(g => g.slot === bp.slot && g.rank === bp.rank);
+      base = U.pick(cands.length ? cands : DATA.gearBases.filter(g => g.slot === bp.slot));
+    }
+    if (!base) { UI.toast('No blueprint pattern found.', 'bad'); return false; }
+
+    const item = {
+      uid: S.inv.nextUid++,
+      base: base.id,
+      slot: bp.slot,
+      rank: bp.rank,
+      rarity,
+      lvl: 0,
+      star: 0,
+      affixes: Forge._rollAffixes(rarity, bp.rank),
+    };
+    Forge._store(item);
+    S.stats.gearCrafted = (S.stats.gearCrafted | 0) + 1;
+    S.forge.crafted = (S.forge.crafted | 0) + 1;
+
+    Bus.emit('gearCrafted', { rank: bp.rank, rarity });
+    UI.toast(`${base.emoji || '\u{2694}'} ${base.name} (${rarity})`, rarity === 'gold' ? 'gold' : 'good');
+    if (rarity === 'gold') { try { UI.flash('gold'); } catch (e) { /* optional */ } }
+
+    Forge._autoEquipIfBetter(item);
+    Stats.invalidate(); Stats.recompute();
+    Forge._sig = '';
+    UI.dirty('abode');
+    return true;
+  },
+
+  /* Keep S.inv.gear bounded (contract section 2: <= 300, auto-salvage worst gray). */
+  _store(item) {
+    if (!Array.isArray(S.inv.gear)) S.inv.gear = [];
+    S.inv.gear.push(item);
+    if (S.inv.gear.length <= 300) return;
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    let worstIdx = -1, worstBr = Infinity;
+    for (let i = 0; i < S.inv.gear.length; i++) {
+      const it = S.inv.gear[i];
+      if (!it || equipped.has(String(it.uid))) continue;
+      const b = Forge.br(it);
+      if (b < worstBr) { worstBr = b; worstIdx = i; }
+    }
+    if (worstIdx >= 0) {
+      const [gone] = S.inv.gear.splice(worstIdx, 1);
+      Forge._payoutSalvage(gone);
+      UI.toast('Your racks overflowed; the worst piece was melted down.', 'info');
+    }
+  },
+
+  _autoEquipIfBetter(item) {
+    const targets = item.slot === 'relic' ? Forge.RELIC_SLOTS : [item.slot];
+    for (const slot of targets) {
+      const cur = Forge.equippedIn(slot);
+      if (!cur) { Forge.equip(item.uid, slot, true); return; }
+    }
+    const slot = targets[0];
+    const cur = Forge.equippedIn(slot);
+    if (cur && Forge.br(item) > Forge.br(cur)) Forge.equip(item.uid, slot, true);
+  },
+
+  /* ---------------------------------------------------------- equip / gear */
+  byUid(uid) {
+    if (uid === null || uid === undefined) return null;
+    return (S.inv.gear || []).find(i => i && String(i.uid) === String(uid)) || null;
+  },
+  equippedIn(slot) { return Forge.byUid((S.equipped || {})[slot]); },
+
+  equip(uid, slot, quiet) {
+    const item = Forge.byUid(uid);
+    if (!item) return false;
+    const target = slot || (item.slot === 'relic' ? Forge._freeRelicSlot() : item.slot);
+    if (!target) return false;
+    if (item.slot === 'relic' && Forge.RELIC_SLOTS.indexOf(target) < 0) return false;
+    if (item.slot !== 'relic' && target !== item.slot) return false;
+    if (item.slot === 'relic' && S.player.realm < CONFIG.unlocks.relics) {
+      UI.toast('Relics are beyond you for now.', 'bad');
+      return false;
+    }
+
+    // Enhance level transfers on replace (spec section 12).
+    const old = Forge.equippedIn(target);
+    if (old && old.uid !== item.uid && (old.lvl | 0) > (item.lvl | 0)) {
+      item.lvl = old.lvl | 0;
+      old.lvl = 0;
+      if (!quiet) UI.toast('The old piece surrendered its refinements.', 'info');
+    }
+    // If it was equipped elsewhere, vacate that slot first.
+    for (const s of Forge.SLOTS.concat(Forge.RELIC_SLOTS)) {
+      if (String(S.equipped[s]) === String(item.uid)) S.equipped[s] = null;
+    }
+    S.equipped[target] = item.uid;
+
+    Stats.invalidate(); Stats.recompute();
+    Bus.emit('statsDirty', {});
+    Forge._sig = '';
+    UI.dirty('abode', 'cultivate');
+    return true;
+  },
+  _freeRelicSlot() {
+    for (const s of Forge.RELIC_SLOTS) if (!S.equipped[s]) return s;
+    return Forge.RELIC_SLOTS[0];
+  },
+  unequip(slot) {
+    if (!S.equipped || !S.equipped[slot]) return false;
+    S.equipped[slot] = null;
+    Stats.invalidate(); Stats.recompute();
+    Forge._sig = '';
+    UI.dirty('abode', 'cultivate');
+    return true;
+  },
+
+  /* -------------------------------------------------------------- enhance */
+  enhanceCost(item) {
+    const lvl = Math.floor(Number(item.lvl) || 0);
+    return Math.round(CONFIG.forge.enhanceCostBase * Math.pow(CONFIG.forge.enhanceCostGrowth, lvl));
+  },
+  enhance(uid) {
+    const item = Forge.byUid(uid);
+    if (!item) return false;
+    if ((item.lvl | 0) >= CONFIG.forge.enhanceMax) { UI.toast('Already at its limit.', 'bad'); return false; }
+    const cost = Forge.enhanceCost(item);
+    if (!Econ.spend('stones', cost)) { UI.toast('Not enough Forge Stones.', 'bad'); return false; }
+    item.lvl = (item.lvl | 0) + 1;
+    Bus.emit('gearEnhanced', { uid: item.uid, level: item.lvl });
+    UI.toast(`+${item.lvl}`, 'good');
+    Stats.invalidate(); Stats.recompute();
+    Forge._sig = '';
+    UI.dirty('abode');
+    return true;
+  },
+
+  /* --------------------------------------------------------------- refine */
+  /* Consume a duplicate of the same base to add a star. */
+  refine(uid) {
+    const item = Forge.byUid(uid);
+    if (!item) return false;
+    if ((item.star | 0) >= CONFIG.forge.refineMaxStar) { UI.toast('Already five stars.', 'bad'); return false; }
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    const dupIdx = (S.inv.gear || []).findIndex(i =>
+      i && i.uid !== item.uid && i.base === item.base && !equipped.has(String(i.uid)));
+    if (dupIdx < 0) { UI.toast('You need a duplicate to refine.', 'bad'); return false; }
+    S.inv.gear.splice(dupIdx, 1);
+    item.star = (item.star | 0) + 1;
+    UI.toast(`Refined to ${item.star}★`, 'gold');
+    Stats.invalidate(); Stats.recompute();
+    Forge._sig = '';
+    UI.dirty('abode');
+    return true;
+  },
+
+  /* -------------------------------------------------------------- salvage */
+  _payoutSalvage(item) {
+    const ri = Forge.rarityIdx(item.rarity);
+    const scale = Math.pow(1.8, (item.rank || 1) - 1);
+    const stones = Math.max(1, Math.round((CONFIG.forge.salvageStones[ri] || 4) * scale));
+    const dust = Math.max(1, Math.round((CONFIG.forge.salvageDust[ri] || 1) * scale));
+    Econ.grant('stones', stones);
+    Econ.grant('dust', dust);
+    return { stones, dust };
+  },
+  salvage(uid) {
+    const idx = (S.inv.gear || []).findIndex(i => i && String(i.uid) === String(uid));
+    if (idx < 0) return false;
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    if (equipped.has(String(uid))) { UI.toast('Unequip it first.', 'bad'); return false; }
+    const [item] = S.inv.gear.splice(idx, 1);
+    const got = Forge._payoutSalvage(item);
+    Bus.emit('gearSalvaged', { n: 1 });
+    UI.toast(`+${Fmt.n(got.stones)} Forge Stones, +${Fmt.n(got.dust)} Soul Dust`, 'good');
+    Forge._sig = '';
+    UI.dirty('abode');
+    return true;
+  },
+  salvageAllGray() {
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    let n = 0, stones = 0, dust = 0;
+    for (let i = (S.inv.gear || []).length - 1; i >= 0; i--) {
+      const it = S.inv.gear[i];
+      if (!it || equipped.has(String(it.uid))) continue;
+      if (it.rarity !== 'gray' && it.rarity !== 'green') continue;
+      S.inv.gear.splice(i, 1);
+      const got = Forge._payoutSalvage(it);
+      stones += got.stones; dust += got.dust; n++;
+    }
+    if (!n) { UI.toast('Nothing worth melting.', 'bad'); return 0; }
+    Bus.emit('gearSalvaged', { n });
+    UI.toast(`Melted ${n} — +${Fmt.n(stones)} Stones, +${Fmt.n(dust)} Dust`, 'good');
+    Forge._sig = '';
+    UI.dirty('abode');
+    return n;
+  },
+
+  /* Reroll an item's affixes with Soul Dust (the Dust Shop's reroll). */
+  reroll(uid) {
+    const item = Forge.byUid(uid);
+    if (!item) return false;
+    if (!Econ.spend('dust', CONFIG.forge.rerollDustCost)) { UI.toast('Not enough Soul Dust.', 'bad'); return false; }
+    item.affixes = Forge._rollAffixes(item.rarity, item.rank);
+    UI.toast('The pattern shifts.', 'good');
+    Stats.invalidate(); Stats.recompute();
+    Forge._sig = '';
+    UI.dirty('abode');
+    return true;
+  },
+
+  /* ================================================================= PANEL */
+  renderInto(host) {
+    if (!host) return;
+    if (!Forge._dom || Forge._dom.host !== host || !host.contains(Forge._dom.root)) Forge._build(host);
+    Forge._patch();
+  },
+
+  _build(host) {
+    host.innerHTML = '';
+    const root = UI.el('div', 'col');
+
+    const pity = UI.el('div', 'card tight');
+    pity.innerHTML = `<div class="row between"><span class="lbl">Forging Pity</span>
+        <span class="val" data-f="pity"></span></div>
+      <div class="meter"><i data-f="pitybar"></i></div>
+      <div class="tiny muted" data-f="pitytxt"></div>`;
+    root.appendChild(pity);
+
+    const eq = UI.el('div', 'col');
+    root.appendChild(eq);
+
+    const act = UI.el('div', 'row');
+    const bCraft = UI.el('button', 'btn primary wide', 'Forge');
+    bCraft.dataset.act = 'fg-open';
+    const bMelt = UI.el('button', 'btn wide', 'Melt Grays');
+    bMelt.dataset.act = 'fg-melt';
+    act.appendChild(bCraft); act.appendChild(bMelt);
+    root.appendChild(act);
+
+    const bag = UI.el('div', 'col');
+    root.appendChild(bag);
+
+    host.appendChild(root);
+    Forge._dom = { host, root, pity, eq, bag };
+    if (!root._wired) {
+      root._wired = true;
+      root.addEventListener('click', (e) => Forge._onClick(e));
+    }
+  },
+
+  _patch() {
+    const d = Forge._dom;
+    if (!d) return;
+    const p = Math.max(0, Math.floor(Number(S.forge.pity) || 0));
+    const next = p >= CONFIG.forge.pityPurple ? CONFIG.forge.pityGold : CONFIG.forge.pityPurple;
+    d.pity.querySelector('[data-f="pity"]').textContent = `${Fmt.n(p)} / ${Fmt.n(next)}`;
+    d.pity.querySelector('[data-f="pitybar"]').style.width = U.clamp(p / next, 0, 1) * 100 + '%';
+    d.pity.querySelector('[data-f="pitytxt"]').textContent =
+      p >= CONFIG.forge.pityGold ? 'The next piece will be golden.'
+        : p >= CONFIG.forge.pityPurple ? 'The next piece will be purple or better.'
+          : `${CONFIG.forge.pityPurple - p} more points to a guaranteed purple.`;
+
+    const eqSig = Forge.SLOTS.concat(Forge.RELIC_SLOTS).map(s => s + ':' + (S.equipped[s] || '-')).join(',');
+    const bagSig = (S.inv.gear || []).map(i => i.uid + '.' + i.lvl + '.' + i.star).join(',');
+    const sig = eqSig + '#' + bagSig + '#' + p;
+    if (sig === Forge._sig) return;
+    Forge._sig = sig;
+
+    d.eq.innerHTML = '';
+    d.eq.appendChild(UI.el('div', 'sec-title serif', 'Worn'));
+    const relicsOpen = S.player.realm >= CONFIG.unlocks.relics;
+    for (const slot of Forge.SLOTS.concat(relicsOpen ? Forge.RELIC_SLOTS : [])) {
+      const it = Forge.equippedIn(slot);
+      const label = slot.startsWith('relic') ? 'Relic ' + slot.slice(-1) : slot[0].toUpperCase() + slot.slice(1);
+      if (!it) {
+        const card = UI.itemCard({ emoji: '⬜', name: label, rarity: 'gray', sub: 'Empty' });
+        d.eq.appendChild(card);
+        continue;
+      }
+      const b = Forge.baseOf(it);
+      const btn = UI.el('button', 'btn sm', 'Manage');
+      btn.dataset.act = 'fg-item'; btn.dataset.id = String(it.uid);
+      d.eq.appendChild(UI.itemCard({
+        emoji: (b && b.emoji) || '⚔',
+        name: `${(b && b.name) || 'Unknown'}${it.lvl ? ' +' + it.lvl : ''}${it.star ? ' ' + it.star + '★' : ''}`,
+        rarity: it.rarity,
+        sub: `${label} · BR ${Fmt.n(Forge.br(it))}`,
+        right: btn,
+      }));
+    }
+
+    d.bag.innerHTML = '';
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    const loose = (S.inv.gear || []).filter(i => i && !equipped.has(String(i.uid)));
+    d.bag.appendChild(UI.el('div', 'sec-title serif', `Racks (${loose.length})`));
+    if (!loose.length) { d.bag.appendChild(UI.el('div', 'empty', 'Nothing on the racks.')); return; }
+    loose.sort((a, b) => Forge.br(b) - Forge.br(a));
+    for (const it of loose.slice(0, 60)) {
+      const b = Forge.baseOf(it);
+      const btn = UI.el('button', 'btn sm', 'Manage');
+      btn.dataset.act = 'fg-item'; btn.dataset.id = String(it.uid);
+      d.bag.appendChild(UI.itemCard({
+        emoji: (b && b.emoji) || '⚔',
+        name: `${(b && b.name) || 'Unknown'}${it.lvl ? ' +' + it.lvl : ''}${it.star ? ' ' + it.star + '★' : ''}`,
+        rarity: it.rarity,
+        sub: `R${it.rank} ${it.slot} · BR ${Fmt.n(Forge.br(it))}`,
+        right: btn,
+      }));
+    }
+    if (loose.length > 60) d.bag.appendChild(UI.el('div', 'tiny muted', `...and ${loose.length - 60} more.`));
+  },
+
+  _onClick(e) {
+    const el = e.target.closest('[data-act]');
+    if (!el) return;
+    const act = el.dataset.act;
+    if (act === 'fg-open') { Forge.openCraftSheet(); return; }
+    if (act === 'fg-melt') { Forge.salvageAllGray(); return; }
+    if (act === 'fg-item') { Forge.openItemSheet(el.dataset.id); return; }
+  },
+
+  openCraftSheet() {
+    const bps = Forge.blueprintsOwned();
+    const body = document.createElement('div');
+    if (!bps.length) {
+      body.appendChild(UI.el('div', 'empty', 'You hold no blueprints. Try the Market, the Sect Library or a boss.'));
+    }
+    for (const bp of bps) {
+      const cost = Forge.craftCost(bp.rank, bp.slot);
+      const wrap = UI.el('div', 'card tight');
+      wrap.appendChild(UI.el('div', 'h2', bp.name));
+      wrap.appendChild(UI.el('div', 'tiny muted', `Rank ${bp.rank} ${bp.slot}`));
+      wrap.appendChild(UI.costRow(cost));
+      const b = UI.el('button', 'btn sm primary', 'Forge');
+      b.dataset.act = 'go'; b.dataset.id = bp.id;
+      const foot = UI.el('div', 'row between');
+      foot.appendChild(UI.el('span', 'tiny muted', `+${CONFIG.forge.pityByTier[bp.rank - 1] || 1} pity`));
+      foot.appendChild(b);
+      wrap.appendChild(foot);
+      body.appendChild(wrap);
+    }
+    UI.sheet({ title: 'Forge', body, buttons: [{ label: 'Close', cls: 'ghost', act: (c) => c() }] });
+    body.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act="go"]');
+      if (b) Forge.craft(b.dataset.id);
+    });
+  },
+
+  openItemSheet(uid) {
+    const it = Forge.byUid(uid);
+    if (!it) return;
+    const b = Forge.baseOf(it);
+    const body = document.createElement('div');
+    const st = Forge.itemStats(it);
+
+    const rows = Object.keys(st).filter(k => st[k] > 0)
+      .map(k => `<div class="kv"><span class="k">${k.toUpperCase()}</span><span class="v">+${Fmt.n(st[k])}</span></div>`).join('');
+    const affix = (it.affixes || []).map(a => {
+      const nice = a.pct ? Fmt.pct(a.v) : '+' + Fmt.n(a.v);
+      return `<div class="kv"><span class="k">${a.k}</span><span class="v good">${nice}</span></div>`;
+    }).join('');
+
+    body.innerHTML = `
+      <div class="h2 ${UI.rarityCls(it.rarity)}">${(b && b.emoji) || '⚔'} ${(b && b.name) || 'Unknown'}</div>
+      <div class="tiny muted">Rank ${it.rank} · ${it.slot} · +${it.lvl || 0} · ${it.star || 0}★ · BR ${Fmt.n(Forge.br(it))}</div>
+      <div class="sec">${rows || '<div class="tiny muted">No flat stats.</div>'}</div>
+      <div class="sec"><div class="lbl">Affixes</div>${affix || '<div class="tiny muted">None.</div>'}</div>`;
+
+    const equipped = String((S.equipped || {})[it.slot === 'relic' ? 'relicA' : it.slot]) === String(it.uid)
+      || Forge.RELIC_SLOTS.some(s => String(S.equipped[s]) === String(it.uid));
+
+    const buttons = [];
+    if (!equipped) buttons.push({ label: 'Equip', cls: 'primary', act: (c) => { Forge.equip(it.uid); c(); } });
+    else buttons.push({ label: 'Unequip', cls: 'ghost', act: (c) => {
+      for (const s of Forge.SLOTS.concat(Forge.RELIC_SLOTS)) if (String(S.equipped[s]) === String(it.uid)) Forge.unequip(s);
+      c();
+    } });
+    buttons.push({ label: `Enhance (${Fmt.n(Forge.enhanceCost(it))})`, cls: '', act: (c) => { Forge.enhance(it.uid); c(); } });
+    buttons.push({ label: 'Refine', cls: '', act: (c) => { Forge.refine(it.uid); c(); } });
+    if (!equipped) buttons.push({ label: 'Salvage', cls: 'danger', act: (c) => { Forge.salvage(it.uid); c(); } });
+
+    UI.sheet({ title: 'Equipment', body, buttons });
   },
 };
 
@@ -20334,6 +21709,1727 @@ const Law = {
 };
 
 
+/* ===== 59_curios.js ====================================================== */
+/* ============================================================================
+ * Curios — 24 collectible treasures with small global passives and set bonuses.
+ *
+ * FORMULAS
+ *   Each owned curio contributes  val * (1 + Stats.bonus('curioPower'))  to its key.
+ *   Set bonus: owning >= CONFIG.curios.setBreakpoints[i] curios adds
+ *   CONFIG.curios.setBonus[i] to BOTH allStat and aura (highest breakpoint only,
+ *   not cumulative — the table is already written as a total).
+ *
+ * Sources: Spire first clears, Mythic fortuity, Sect Clash chests, era ascensions.
+ * Duplicates convert to Fate Jade rather than being lost.
+ * ==========================================================================*/
+
+const Curios = {
+  _dom: null, _sig: '',
+
+  init() {
+    try { Stats.provider(Curios._bonus); } catch (e) { /* optional */ }
+    try { UI.register('curios', () => Curios.render()); } catch (e) { /* optional */ }
+  },
+  tick() {},
+  badges() { return 0; },
+
+  owned() { return (S && S.curios && Array.isArray(S.curios.owned)) ? S.curios.owned : []; },
+  has(id) { return Curios.owned().indexOf(id) >= 0; },
+  count() { return Curios.owned().length; },
+
+  /* Highest set breakpoint reached, or -1. */
+  setIdx() {
+    const n = Curios.count();
+    let idx = -1;
+    for (let i = 0; i < CONFIG.curios.setBreakpoints.length; i++) {
+      if (n >= CONFIG.curios.setBreakpoints[i]) idx = i;
+    }
+    return idx;
+  },
+
+  _bonus(acc) {
+    if (typeof S === 'undefined' || !S || !S.curios) return;
+    const list = Curios.owned();
+    if (!list.length) return;
+    // curioPower amplifies curios, but must not amplify itself (no feedback loop).
+    let amp = 1;
+    try { amp = 1 + (Number(Stats.b && Stats.b.curioPower) || 0); } catch (e) { amp = 1; }
+
+    for (const id of list) {
+      const c = DATAX.curioById[id];
+      if (!c || acc[c.key] === undefined) continue;
+      acc[c.key] += (Number(c.val) || 0) * (c.key === 'curioPower' ? 1 : amp);
+    }
+    const si = Curios.setIdx();
+    if (si >= 0) {
+      const v = CONFIG.curios.setBonus[si] || 0;
+      acc.allStat += v;
+      acc.aura += v;
+    }
+  },
+
+  /* Grant a curio. Pass null/'random' for a random unowned one.
+     Returns the granted id, or null when nothing was granted. */
+  own(id) {
+    if (!S) return null;
+    if (!Array.isArray(S.curios.owned)) S.curios.owned = [];
+
+    let target = id;
+    if (!target || target === 'random') {
+      const missing = DATA.curios.filter(c => !Curios.has(c.id));
+      if (!missing.length) {
+        Econ.grant('jade', 40);
+        UI.toast('You own every curio — the collector pays you off instead. +40 Jade', 'gold');
+        return null;
+      }
+      target = U.pick(missing).id;
+    }
+    const c = DATAX.curioById[target];
+    if (!c) return null;
+
+    if (Curios.has(target)) {
+      Econ.grant('jade', 15);
+      UI.toast(`A second ${c.name}. Sold. +15 Jade`, 'good');
+      return null;
+    }
+
+    S.curios.owned.push(target);
+    Bus.emit('curioGain', { id: target });
+    Stats.invalidate(); Stats.recompute();
+    UI.toast(`${c.emoji} ${c.name}`, 'gold');
+    try { UI.flash('gold'); } catch (e) { /* optional */ }
+
+    const si = Curios.setIdx();
+    if (si >= 0 && CONFIG.curios.setBreakpoints[si] === Curios.count()) {
+      UI.toast(`Collection set ${Curios.count()} — every stat and your aura deepen.`, 'gold');
+    }
+    Curios._sig = '';
+    UI.dirty('curios');
+    UI.refreshBadges();
+    return target;
+  },
+
+  /* ---------------------------------------------------------------- panel */
+  render() {
+    const panel = UI.panel('curios');
+    if (!panel) return;
+    if (UI.lock('curios', CONFIG.unlocks.curios)) return;
+    if (!Curios._dom || !panel.contains(Curios._dom.root)) Curios._build(panel);
+
+    const sig = Curios.owned().slice().sort().join(',');
+    if (sig === Curios._sig) return;
+    Curios._sig = sig;
+
+    const d = Curios._dom;
+    const n = Curios.count();
+    d.head.textContent = `${n} / ${DATA.curios.length} gathered`;
+
+    d.sets.innerHTML = '';
+    for (let i = 0; i < CONFIG.curios.setBreakpoints.length; i++) {
+      const need = CONFIG.curios.setBreakpoints[i];
+      const on = n >= need;
+      const chip = UI.el('span', 'chip' + (on ? ' gold' : ' muted'),
+        `${need}: +${Fmt.pct(CONFIG.curios.setBonus[i])}`);
+      d.sets.appendChild(chip);
+    }
+
+    d.grid.innerHTML = '';
+    for (const c of DATA.curios) {
+      const has = Curios.has(c.id);
+      const cell = UI.el('div', 'card tight' + (has ? ' ' + UI.rarityBg('purple') : ' locked'));
+      cell.innerHTML = `<div class="h1" style="text-align:center">${has ? c.emoji : '❓'}</div>
+        <div class="tiny ${has ? '' : 'muted'}" style="text-align:center">${has ? UI.esc(c.name) : '???'}</div>`;
+      if (has) { cell.dataset.act = 'curio'; cell.dataset.id = c.id; }
+      d.grid.appendChild(cell);
+    }
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const head = UI.el('div', 'card tight');
+    const h = UI.el('div', 'val'); head.appendChild(h);
+    const sets = UI.el('div', 'row wrap'); head.appendChild(sets);
+    root.appendChild(head);
+    const grid = UI.el('div', 'grid3'); root.appendChild(grid);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Curios._dom = { root, grid, sets, head: h };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act="curio"]');
+      if (!el) return;
+      const c = DATAX.curioById[el.dataset.id];
+      if (!c) return;
+      UI.sheet({
+        title: c.name,
+        body: `<div class="h1" style="text-align:center">${c.emoji}</div>
+          <p class="serif">${UI.esc(c.flavor)}</p>
+          <div class="kv"><span class="k">Effect</span><span class="v good">+${Fmt.pct(c.val)} ${c.key}</span></div>`,
+        buttons: [{ label: 'Close', cls: 'ghost', act: (cl) => cl() }],
+      });
+    });
+  },
+};
+
+
+/* ===== 60_shops.js ======================================================= */
+/* ============================================================================
+ * Shops — Market, Black Market, Sect Library, Jade Shop, Dust Shop.
+ *
+ * REFRESH
+ *   market : CONFIG.economy.marketSlots picked per local day, of which
+ *            CONFIG.economy.marketFormulaSlots are formula unlocks.
+ *   black  : CONFIG.economy.blackMarketSlots picked every
+ *            CONFIG.economy.blackMarketRefreshSec (8h), each discounted
+ *            25%-60%. Unlocks at Nascent Soul.
+ *   library / jade / dust are fixed shelves.
+ *
+ * PURCHASE BOOKKEEPING
+ *   S.shops.bought['<shop>:<id>'] = {day, n}  — n is the lifetime count, day is
+ *   the last purchase date, so per-day stock limits and escalating repeat costs
+ *   both work off one record. The Sect module uses the same 'library:<id>' key.
+ *
+ * QoL grants (the Jade Shop replaces monetisation entirely) write to the
+ * canonical homes other modules read: S.flags.offlineUp, S.respira.capUp,
+ * S.alchemy.queueUp / .assistant, S.flags.autoHunt, S.abode.garden length.
+ * ==========================================================================*/
+
+const Shops = {
+  TABS: [
+    { key: 'market', label: '\u{1F3EE} Market', cur: 'stone' },
+    { key: 'black', label: '\u{1F311} Black', cur: 'jade', realm: CONFIG.economy.blackMarketUnlockRealm },
+    { key: 'library', label: '\u{1F4DA} Library', cur: 'citrine' },
+    { key: 'jade', label: '\u{1F48E} Jade', cur: 'jade' },
+    { key: 'dust', label: '\u{2728} Dust', cur: 'dust' },
+  ],
+  _dom: null, _sig: '', _sub: 'market',
+
+  init() {
+    try { UI.register('shops', () => Shops.render()); } catch (e) { /* optional */ }
+    try { Bus.on('dailyReset', () => Shops.rollMarket(true)); } catch (e) { /* optional */ }
+    Shops.rollMarket(false);
+    Shops.rollBlack(false);
+  },
+
+  tick(dt) {
+    Shops._acc = (Shops._acc || 0) + dt;
+    if (Shops._acc < 5) return;
+    Shops._acc = 0;
+    Shops.rollBlack(false);
+  },
+  badges() { return 0; },
+
+  /* ------------------------------------------------------------- refreshes */
+  rollMarket(force) {
+    if (!S || !S.shops) return;
+    if (!S.shops.market || typeof S.shops.market !== 'object') S.shops.market = { stock: [], day: '' };
+    const today = U.todayStr();
+    if (!force && S.shops.market.day === today && (S.shops.market.stock || []).length) return;
+
+    const all = DATA.shops.market || [];
+    const formulas = all.filter(i => i.give && i.give.formula);
+    const others = all.filter(i => !(i.give && i.give.formula));
+    const picked = U.shuffle(formulas).slice(0, CONFIG.economy.marketFormulaSlots)
+      .concat(U.shuffle(others).slice(0, Math.max(0, CONFIG.economy.marketSlots - CONFIG.economy.marketFormulaSlots)));
+
+    S.shops.market.stock = picked.map(i => ({ id: i.id, disc: 0 }));
+    S.shops.market.day = today;
+    Shops._sig = '';
+  },
+
+  rollBlack(force) {
+    if (!S || !S.shops) return;
+    if (!S.shops.black || typeof S.shops.black !== 'object') S.shops.black = { stock: [], nextAt: 0 };
+    const now = Date.now();
+    if (!force && S.shops.black.nextAt > now && (S.shops.black.stock || []).length) return;
+
+    const all = DATA.shops.black || [];
+    const picked = U.shuffle(all).slice(0, CONFIG.economy.blackMarketSlots);
+    S.shops.black.stock = picked.map(i => ({
+      id: i.id,
+      disc: U.rand(CONFIG.economy.blackMarketDiscountMin, CONFIG.economy.blackMarketDiscountMax),
+    }));
+    S.shops.black.nextAt = now + CONFIG.economy.blackMarketRefreshSec * 1000;
+    Shops._sig = '';
+  },
+
+  /* --------------------------------------------------------------- lookups */
+  def(shop, id) { return (DATA.shops[shop] || []).find(i => i.id === id) || null; },
+
+  record(shop, id) {
+    if (!S.shops.bought || typeof S.shops.bought !== 'object') S.shops.bought = {};
+    const k = shop + ':' + id;
+    let r = S.shops.bought[k];
+    if (!r || typeof r !== 'object') { r = { day: '', n: 0 }; S.shops.bought[k] = r; }
+    return r;
+  },
+
+  /* Cost of the NEXT purchase, honouring a `costs` array for repeatables and a
+     Black-Market discount. */
+  costOf(shop, item, disc) {
+    let base = item.cost || {};
+    if (Array.isArray(item.costs) && item.costs.length) {
+      const n = Shops.record(shop, item.id).n | 0;
+      base = item.costs[Math.min(n, item.costs.length - 1)] || item.costs[item.costs.length - 1];
+    }
+    const out = {};
+    for (const k in base) {
+      const v = Math.floor(Number(base[k]) || 0);
+      out[k] = disc ? Math.max(1, Math.round(v * (1 - disc))) : v;
+    }
+    return out;
+  },
+
+  soldOut(shop, item) {
+    const stock = Number(item.stock);
+    if (!Number.isFinite(stock) || stock < 0) return false;      // -1 or absent = unlimited
+    const r = Shops.record(shop, item.id);
+    const today = U.todayStr();
+    const usedToday = r.day === today ? r.n : 0;
+    // repeatable QoL entries with a `costs` ladder are capped by that ladder
+    if (Array.isArray(item.costs)) return (r.n | 0) >= item.costs.length;
+    return usedToday >= stock;
+  },
+
+  /* ---------------------------------------------------------------- buying */
+  buy(shop, id, disc) {
+    const item = Shops.def(shop, id);
+    if (!item) return false;
+    if (item.realm !== undefined && S.player.realm < item.realm) { UI.toast('Beyond you for now.', 'bad'); return false; }
+    if (Shops.soldOut(shop, item)) { UI.toast('Sold out.', 'bad'); return false; }
+
+    const cost = Shops.costOf(shop, item, disc);
+    if (!Econ.spend(cost)) { UI.toast('You cannot afford that.', 'bad'); return false; }
+
+    const r = Shops.record(shop, id);
+    const today = U.todayStr();
+    r.n = (r.day === today ? (r.n | 0) : (Array.isArray(item.costs) ? (r.n | 0) : 0)) + 1;
+    r.day = today;
+
+    Shops.give(item.give || {});
+    Bus.emit('shopBuy', { shop, id });
+    UI.toast(`Bought ${item.name}.`, 'good');
+    Stats.invalidate(); Stats.recompute();
+    Shops._sig = '';
+    UI.dirty('shops', 'abode', 'cultivate');
+    UI.refreshBadges();
+    Save.save();
+    return true;
+  },
+
+  /* Resolve a shop `give` payload. */
+  give(g) {
+    const cur = {};
+    for (const k in g) {
+      const v = g[k];
+      switch (k) {
+        case 'formula': {
+          const id = v === 'random' ? U.pick(DATA.formulas).id : v;
+          if (!S.inv.formulas.includes(id)) S.inv.formulas.push(id);
+          else Econ.grant('stone', 200);
+          break;
+        }
+        case 'blueprint': {
+          const id = v === 'random' ? U.pick(DATA.blueprints).id : v;
+          if (!S.inv.blueprints.includes(id)) S.inv.blueprints.push(id);
+          else Econ.grant('dust', 40);
+          break;
+        }
+        case 'curio': { try { Curios.own(v === 'random' ? null : v); } catch (e) { /* optional */ } break; }
+        case 'seedTier': { Econ.grant('seed:' + U.clamp(Math.floor(Number(v) || 1), 1, 6), 3); break; }
+        case 'qol': { Shops.qol(String(v), g.val); break; }
+        default: cur[k] = v;
+      }
+    }
+    Econ.grantAll(cur);
+  },
+
+  /* Permanent quality-of-life unlocks. Each writes the canonical field the
+     owning module reads, so nothing needs a second source of truth. */
+  qol(kind, val) {
+    switch (kind) {
+      case 'offlineCap':
+        S.flags.offlineUp = U.clamp((S.flags.offlineUp | 0) + 1, 0, CONFIG.offline.maxUpgrades);
+        UI.toast(`Offline cap is now ${Offline.capHours()}h.`, 'gold');
+        break;
+      case 'respiraCap':
+        S.respira.capUp = U.clamp((S.respira.capUp | 0) + 1, 0, CONFIG.respira.maxCapUpgrades);
+        UI.toast('You can hold more breath.', 'gold');
+        break;
+      case 'gardenPlot': {
+        if (!Array.isArray(S.abode.garden)) S.abode.garden = [];
+        if (S.abode.garden.length < CONFIG.abode.gardenPlotsMax) {
+          S.abode.garden.push({ seed: null, endAt: 0 });
+          UI.toast('A new plot is turned over.', 'gold');
+        } else UI.toast('The garden is already full.', 'info');
+        break;
+      }
+      case 'alchemyQueue':
+        S.alchemy.queueUp = U.clamp((S.alchemy.queueUp | 0) + 1, 0, CONFIG.alchemy.maxQueueUpgrades);
+        UI.toast('Another crucible fits on the bench.', 'gold');
+        break;
+      case 'alchemyAssistant':
+        S.alchemy.assistant = true;
+        UI.toast('An assistant will keep the furnace fed.', 'gold');
+        break;
+      case 'autoHunt':
+        S.flags.autoHunt = true;
+        S.settings.autoHunt = true;
+        UI.toast('Your feet will find the trail without you.', 'gold');
+        break;
+      case 'title':
+        if (val) { S.player.title = String(val); UI.toast('Title set.', 'good'); }
+        break;
+      case 'auraColor':
+        if (val) { S.player.auraColor = String(val); UI.toast('Your aura shifts hue.', 'good'); }
+        break;
+      case 'reroll':
+        Shops.openRerollPicker();
+        break;
+      default:
+        console.warn('[Shops] unknown qol grant:', kind);
+    }
+  },
+
+  openRerollPicker() {
+    const equipped = new Set(Object.values(S.equipped || {}).map(String));
+    const list = (S.inv.gear || []).filter(i => i && (i.affixes || []).length);
+    const body = document.createElement('div');
+    if (!list.length) body.appendChild(UI.el('div', 'empty', 'Nothing with affixes to reroll.'));
+    for (const it of list.slice(0, 40)) {
+      const b = Forge.baseOf(it);
+      const btn = UI.el('button', 'btn sm', 'Reroll');
+      btn.dataset.act = 'rr'; btn.dataset.id = String(it.uid);
+      body.appendChild(UI.itemCard({
+        emoji: (b && b.emoji) || '⚔',
+        name: (b && b.name) || 'Unknown',
+        rarity: it.rarity,
+        sub: (equipped.has(String(it.uid)) ? 'Worn · ' : '') + `BR ${Fmt.n(Forge.br(it))}`,
+        right: btn,
+      }));
+    }
+    UI.sheet({ title: 'Reroll Affixes', body, buttons: [{ label: 'Close', cls: 'ghost', act: (c) => c() }] });
+    body.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act="rr"]');
+      if (b) Forge.reroll(b.dataset.id);
+    });
+  },
+
+  /* ---------------------------------------------------------------- panel */
+  setSub(key) { Shops._sub = key; Shops._sig = ''; UI.dirty('shops'); },
+
+  render() {
+    const panel = UI.panel('shops');
+    if (!panel) return;
+    if (!Shops._dom || !panel.contains(Shops._dom.root)) Shops._build(panel);
+    Shops.rollMarket(false);
+    Shops.rollBlack(false);
+
+    const d = Shops._dom;
+    for (const b of d.tabs.children) b.classList.toggle('active', b.dataset.sub === Shops._sub);
+
+    const sub = Shops._sub;
+    const sig = sub + '|' + JSON.stringify(S.shops.market.stock || []) + '|'
+      + JSON.stringify(S.shops.black.stock || []) + '|'
+      + Object.keys(S.shops.bought || {}).length + '|'
+      + S.cur.stone + ',' + S.cur.jade + ',' + S.cur.citrine + ',' + S.cur.dust;
+    if (sig === Shops._sig) return;
+    Shops._sig = sig;
+
+    d.list.innerHTML = '';
+    const tabDef = Shops.TABS.find(t => t.key === sub);
+    if (tabDef && tabDef.realm !== undefined && S.player.realm < tabDef.realm) {
+      d.list.appendChild(UI.el('div', 'empty', `That door opens at ${UI.realmName(tabDef.realm)}.`));
+      return;
+    }
+
+    if (sub === 'black') {
+      const left = Math.max(0, ((S.shops.black.nextAt || 0) - Date.now()) / 1000);
+      d.list.appendChild(UI.el('div', 'tiny muted', `New stock in ${Fmt.dur(left)}`));
+    }
+    if (sub === 'market') {
+      d.list.appendChild(UI.el('div', 'tiny muted', `Restocks in ${Fmt.dur(Daily.secToReset(Date.now()))}`));
+    }
+
+    const rows = (sub === 'market' || sub === 'black')
+      ? (S.shops[sub].stock || []).map(s => ({ item: Shops.def(sub, s.id), disc: s.disc }))
+      : (DATA.shops[sub] || []).map(i => ({ item: i, disc: 0 }));
+
+    let any = false;
+    for (const { item, disc } of rows) {
+      if (!item) continue;
+      any = true;
+      const cost = Shops.costOf(sub, item, disc);
+      const out = Shops.soldOut(sub, item);
+      const gated = item.realm !== undefined && S.player.realm < item.realm;
+      const afford = Object.keys(cost).every(k => Econ.can(k, cost[k]));
+
+      const btn = UI.el('button', 'btn sm' + (!out && !gated && afford ? ' primary' : ''),
+        out ? 'Sold' : (gated ? 'Locked' : 'Buy'));
+      btn.disabled = out || gated || !afford;
+      if (!btn.disabled) {
+        btn.dataset.act = 'buy'; btn.dataset.id = item.id;
+        btn.dataset.shop = sub; btn.dataset.disc = String(disc || 0);
+      }
+
+      const card = UI.itemCard({
+        emoji: item.emoji || '\u{1F4E6}',
+        name: item.name + (disc ? `  −${Math.round(disc * 100)}%` : ''),
+        rarity: disc ? 'purple' : 'gray',
+        sub: item.desc || '',
+        right: btn,
+      });
+      card.appendChild(UI.costRow(cost));
+      d.list.appendChild(card);
+    }
+    if (!any) d.list.appendChild(UI.el('div', 'empty', 'The shelves are bare.'));
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const tabs = UI.el('div', 'tabs');
+    for (const t of Shops.TABS) {
+      const b = UI.el('button', 'tab', t.label);
+      b.dataset.sub = t.key;
+      tabs.appendChild(b);
+    }
+    root.appendChild(tabs);
+    const list = UI.el('div', 'col');
+    root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Shops._dom = { root, tabs, list };
+    root.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-sub]');
+      if (tab) { Shops.setSub(tab.dataset.sub); return; }
+      const b = e.target.closest('[data-act="buy"]');
+      if (b) Shops.buy(b.dataset.shop, b.dataset.id, parseFloat(b.dataset.disc) || 0);
+    });
+  },
+};
+
+
+/* ===== 61_meta.js ======================================================== */
+/* ============================================================================
+ * Quests — the 32-step main chain, and Story — the Shifu's dialogue beats.
+ *
+ * The chain is strictly linear: S.quests.step indexes DATA.quests. A step is
+ * "ready" once its check(S) predicate passes; claiming it pays rewards, shows
+ * the Shifu's lines, and advances the step. The home-screen chip (#questChip)
+ * always shows the current step and deep-links to the tab that completes it.
+ *
+ * Story.beat(id) is idempotent: each beat id fires at most once per save, which
+ * is what lets any system call it freely on a milestone without bookkeeping.
+ * ==========================================================================*/
+
+const Quests = {
+  _dom: null,
+  _sig: '',
+
+  init() {
+    try { UI.register('quests', () => Quests.render()); } catch (e) { /* optional */ }
+    // Any progress at all may complete a step, so re-check on a broad set.
+    const evts = ['breakthrough', 'phaseUp', 'huntClear', 'pillCrafted', 'pillUsed',
+      'gearCrafted', 'gearEnhanced', 'sectJoin', 'techUnlock', 'spireClear',
+      'duelFight', 'tideClear', 'curioGain', 'abodeUpgrade', 'lawChosen', 'samsara'];
+    for (const e of evts) {
+      try { Bus.on(e, () => Quests.refresh()); } catch (err) { /* optional */ }
+    }
+  },
+
+  tick(dt, now) {
+    Quests._acc = (Quests._acc || 0) + dt;
+    if (Quests._acc < 2) return;
+    Quests._acc = 0;
+    Quests.refresh();
+  },
+
+  current() {
+    const step = U.clamp(Math.floor(Number(S.quests.step) || 0), 0, DATA.quests.length);
+    return step < DATA.quests.length ? DATA.quests[step] : null;
+  },
+
+  isReady() {
+    const q = Quests.current();
+    if (!q) return false;
+    try { return !!q.check(S); } catch (e) { return false; }
+  },
+
+  refresh() {
+    Quests.paintChip();
+    try { UI.badge('more.quests', Quests.isReady() ? 1 : 0); } catch (e) { /* pre-boot */ }
+    UI.dirty('quests');
+  },
+
+  badges() { return Quests.isReady() ? 1 : 0; },
+
+  /* The persistent chip under the HUD. */
+  paintChip() {
+    const chip = document.getElementById('questChip');
+    if (!chip) return;
+    const q = Quests.current();
+    if (!q) {
+      chip.textContent = 'The path is walked. What now?';
+      chip.className = 'chip muted';
+      chip.removeAttribute('data-tab');
+      return;
+    }
+    const ready = Quests.isReady();
+    chip.className = 'chip' + (ready ? ' gold' : '');
+    chip.textContent = (ready ? '✓ ' : '') + q.title;
+    chip.dataset.act = 'quest-go';
+    chip.dataset.id = q.id;
+  },
+
+  claim() {
+    const q = Quests.current();
+    if (!q) return false;
+    if (!Quests.isReady()) { UI.toast('Not yet.', 'bad'); return false; }
+
+    try { Econ.grantAll(q.rewards || {}); } catch (e) { console.warn(e); }
+    if (!Array.isArray(S.quests.claimed)) S.quests.claimed = [];
+    S.quests.claimed.push(q.id);
+    S.quests.step = U.clamp((Math.floor(Number(S.quests.step) || 0)) + 1, 0, DATA.quests.length);
+
+    let txt = '';
+    try { txt = Econ.rewardText(q.rewards || {}); } catch (e) { txt = ''; }
+    UI.toast(txt ? `Received ${txt}` : 'The lesson lands.', 'gold');
+
+    if (Array.isArray(q.dialogue) && q.dialogue.length) {
+      Story.say('Shifu', q.dialogue);
+    }
+    try { Pass.addPoints(20); } catch (e) { /* optional */ }
+    Stats.invalidate(); Stats.recompute();
+    Quests.refresh();
+    UI.refreshBadges();
+    Save.save();
+    return true;
+  },
+
+  /* ---------------------------------------------------------------- panel */
+  render() {
+    const panel = UI.panel('quests');
+    if (!panel) return;
+    if (!Quests._dom || !panel.contains(Quests._dom.root)) Quests._build(panel);
+
+    const q = Quests.current();
+    const d = Quests._dom;
+    const sig = (q ? q.id : 'done') + (Quests.isReady() ? '!' : '') + S.quests.step;
+    if (sig === Quests._sig) return;
+    Quests._sig = sig;
+
+    d.list.innerHTML = '';
+    if (!q) {
+      d.list.appendChild(UI.el('div', 'empty',
+        'Every task the old one set you is finished. He seems quietly pleased, which is alarming.'));
+    } else {
+      const card = UI.el('div', 'card');
+      card.appendChild(UI.el('div', 'h1 serif', q.title));
+      card.appendChild(UI.el('div', 'muted', q.desc || ''));
+      const rw = UI.el('div', 'sec');
+      rw.appendChild(UI.el('div', 'lbl', 'Reward'));
+      rw.appendChild(UI.costRow(q.rewards || {}));
+      card.appendChild(rw);
+      const foot = UI.el('div', 'row');
+      const go = UI.el('button', 'btn wide', 'Show me');
+      go.dataset.act = 'quest-go';
+      const claim = UI.el('button', 'btn wide primary', Quests.isReady() ? 'Claim' : 'Not yet');
+      claim.dataset.act = 'quest-claim';
+      claim.disabled = !Quests.isReady();
+      if (Quests.isReady()) claim.classList.add('glow');
+      foot.appendChild(go); foot.appendChild(claim);
+      card.appendChild(foot);
+      d.list.appendChild(card);
+    }
+
+    // completed history
+    const done = (S.quests.claimed || []).slice(-8).reverse();
+    if (done.length) {
+      d.list.appendChild(UI.el('div', 'sec-title serif', 'Behind you'));
+      for (const id of done) {
+        const past = DATA.quests.find(x => x.id === id);
+        if (past) d.list.appendChild(UI.itemCard({ emoji: '✓', name: past.title, rarity: 'green', sub: past.desc }));
+      }
+    }
+    d.prog.textContent = `${S.quests.step} / ${DATA.quests.length}`;
+    d.bar.style.width = U.clamp(S.quests.step / DATA.quests.length, 0, 1) * 100 + '%';
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const head = UI.el('div', 'card tight');
+    head.innerHTML = `<div class="row between"><span class="lbl">The Long Road</span>
+      <span class="val" data-f="prog"></span></div><div class="bar exp"><i data-f="bar"></i></div>`;
+    root.appendChild(head);
+    const list = UI.el('div', 'col');
+    root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Quests._dom = { root, list, prog: head.querySelector('[data-f="prog"]'), bar: head.querySelector('[data-f="bar"]') };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      if (el.dataset.act === 'quest-claim') Quests.claim();
+      if (el.dataset.act === 'quest-go') Quests.goto();
+    });
+  },
+
+  /* Deep-link to the tab that completes the current step. */
+  goto() {
+    const q = Quests.current();
+    if (!q) return;
+    const tab = String(q.tab || 'cultivate');
+    const dot = tab.indexOf('.');
+    try {
+      if (dot > 0) UI.show(tab.slice(dot + 1));
+      else UI.show(tab);
+    } catch (e) { UI.show('cultivate'); }
+  },
+};
+
+/* ============================================================================
+ * Story — Shifu and rival dialogue beats.
+ * ==========================================================================*/
+const Story = {
+  init() {
+    try {
+      Bus.on('breakthrough', (d) => {
+        const map = { 2: 'foundation', 3: 'virtuoso', 4: 'nascent', 5: 'incarnation',
+          6: 'voidbreak', 7: 'wholeness', 8: 'perfection', 9: 'nirvana', 10: 'celestial' };
+        const id = map[d && d.realm];
+        if (id) Story.beat(id);
+      });
+      Bus.on('sectJoin', () => Story.beat('sect'));
+      Bus.on('tideClear', () => Story.beat('firstTide'));
+      Bus.on('lawChosen', () => Story.beat('lawChoice'));
+      Bus.on('samsara', () => Story.beat('samsara'));
+    } catch (e) { /* optional */ }
+  },
+  tick() {},
+
+  /* Show a named beat once per save. */
+  beat(id) {
+    if (!id || !S) return false;
+    if (!Array.isArray(S.story.seen)) S.story.seen = [];
+    if (S.story.seen.indexOf(id) >= 0) return false;
+
+    const lines = (DATA.dialogue && DATA.dialogue.shifu && DATA.dialogue.shifu[id])
+      || (DATA.dialogue && DATA.dialogue.rival && DATA.dialogue.rival[id]);
+    if (!lines || !lines.length) return false;
+
+    S.story.seen.push(id);
+    const who = (DATA.dialogue.rival && DATA.dialogue.rival[id]) ? 'A familiar voice' : 'Shifu';
+    Story.say(who, lines);
+    Save.save();
+    return true;
+  },
+
+  /* Show dialogue lines one modal at a time, advancing on tap. */
+  say(who, lines, done) {
+    const arr = Array.isArray(lines) ? lines.slice() : [String(lines)];
+    let i = 0;
+    const step = () => {
+      if (i >= arr.length) { if (done) done(); return; }
+      const line = arr[i++];
+      const body = document.createElement('div');
+      body.innerHTML = `<div class="row"><span class="unit-emoji">${who === 'Shifu' ? '\u{1F9D3}' : '\u{1F5E1}'}</span>
+        <div class="col"><div class="tiny muted">${UI.esc ? UI.esc(who) : who}</div>
+        <div class="serif" style="font-size:16px;line-height:1.5">${UI.esc ? UI.esc(line) : line}</div></div></div>`;
+      UI.modal({
+        title: '', body,
+        buttons: [{ label: i >= arr.length ? 'Bow' : 'Go on', cls: 'primary', act: (close) => { close(); step(); } }],
+      });
+    };
+    step();
+  },
+};
+
+
+/* ===== 62_retention.js =================================================== */
+/* ============================================================================
+ * Retention — Pass (the free Ascension Path), Ach (achievements), Mail (inbox),
+ * and the daily/weekly task tracker that feeds them.
+ *
+ * FORMULAS
+ *   Daily/weekly tasks live in S.daily.tasks / S.weekly.tasks as
+ *     {id, prog, need, done, claimed}
+ *   and are advanced purely from Bus events, so the player never "reports" work.
+ *   Claiming a task pays activity points; activity points drive both the three
+ *   daily chests (40 / 80 / 120) and the 50-level Ascension Path
+ *   (CONFIG.economy.passPointsPerLevel = 100 per level).
+ *
+ * Achievements read a dotted stat path out of the save generically, so adding a
+ * new achievement is a pure DATA change.
+ * ==========================================================================*/
+
+const Pass = {
+  _dom: null, _sig: '',
+
+  init() {
+    try { UI.register('pass', () => Pass.render()); } catch (e) { /* optional */ }
+    Pass._wireTasks();
+    try { Stats.provider(Pass._bonus); } catch (e) { /* optional */ }
+  },
+  tick() {},
+
+  /* Pass milestones can grant permanent pill attempts (rewards:{passAttempt:1}). */
+  _bonus(acc) {
+    if (typeof S === 'undefined' || !S || !S.pass) return;
+    let n = 0;
+    for (const lvl of (S.pass.claimed || [])) {
+      const row = DATA.pass.find(p => p.lvl === lvl);
+      if (row && row.rewards && row.rewards.passAttempt) n += Math.floor(Number(row.rewards.passAttempt) || 0);
+    }
+    acc.pillAttempts += n;
+  },
+
+  /* -------------------------------------------------- task event plumbing */
+  _wireTasks() {
+    const tables = [
+      { list: () => DATA.dailies, state: () => S.daily.tasks },
+      { list: () => DATA.weeklies, state: () => S.weekly.tasks },
+    ];
+    const evts = {};
+    for (const t of DATA.dailies.concat(DATA.weeklies)) {
+      if (t && t.evt) evts[t.evt] = true;
+    }
+    for (const evt in evts) {
+      try {
+        Bus.on(evt, (data) => {
+          let touched = false;
+          for (const tbl of tables) {
+            const defs = tbl.list();
+            const st = tbl.state();
+            if (!Array.isArray(st)) continue;
+            for (const row of st) {
+              const def = defs.find(d => d.id === row.id);
+              if (!def || def.evt !== evt || row.done) continue;
+              if (typeof def.match === 'function') {
+                let ok = false;
+                try { ok = !!def.match(data || {}); } catch (e) { ok = false; }
+                if (!ok) continue;
+              }
+              row.prog = (Number(row.prog) || 0) + 1;
+              if (row.prog >= row.need) { row.done = true; touched = true; }
+              touched = true;
+            }
+          }
+          if (touched) { Pass._badge(); UI.dirty('pass'); }
+        });
+      } catch (e) { /* optional */ }
+    }
+  },
+
+  _defOf(id) {
+    return DATA.dailies.find(d => d.id === id) || DATA.weeklies.find(d => d.id === id) || null;
+  },
+
+  claimTask(scope, id) {
+    const st = scope === 'weekly' ? S.weekly.tasks : S.daily.tasks;
+    if (!Array.isArray(st)) return false;
+    const row = st.find(r => r.id === id);
+    if (!row || !row.done || row.claimed) return false;
+    const def = Pass._defOf(id);
+    row.claimed = true;
+    const pts = Math.max(0, Math.floor(Number(def && def.points) || 0));
+    Pass.addPoints(pts);
+    UI.toast(`+${pts} activity`, 'good');
+    Pass._badge();
+    UI.dirty('pass');
+    Save.save();
+    return true;
+  },
+
+  claimAllTasks() {
+    let n = 0;
+    for (const row of (S.daily.tasks || [])) if (row.done && !row.claimed) { if (Pass.claimTask('daily', row.id)) n++; }
+    for (const row of (S.weekly.tasks || [])) if (row.done && !row.claimed) { if (Pass.claimTask('weekly', row.id)) n++; }
+    if (!n) UI.toast('Nothing to claim.', 'bad');
+    return n;
+  },
+
+  /* ------------------------------------------------------- activity/levels */
+  addPoints(n) {
+    const add = Math.max(0, Math.floor(Number(n) || 0));
+    if (!add) return 0;
+    S.daily.activityPoints = (Math.floor(Number(S.daily.activityPoints) || 0)) + add;
+    S.pass.points = (Math.floor(Number(S.pass.points) || 0)) + add;
+
+    const per = CONFIG.economy.passPointsPerLevel;
+    let lvl = Math.floor(S.pass.points / per);
+    if (lvl > CONFIG.economy.passLevels) lvl = CONFIG.economy.passLevels;
+    if (lvl > (S.pass.level | 0)) {
+      S.pass.level = lvl;
+      UI.toast(`Ascension Path — level ${lvl}`, 'gold');
+    }
+    try { Bus.emit('activity', { points: add }); } catch (e) { /* optional */ }
+    Pass._badge();
+    return add;
+  },
+
+  chestReady(i) {
+    const need = CONFIG.economy.dailyChestPoints[i];
+    return (S.daily.activityPoints | 0) >= need && !(S.daily.chestsClaimed || [])[i];
+  },
+  claimChest(i) {
+    if (!Pass.chestReady(i)) return false;
+    if (!Array.isArray(S.daily.chestsClaimed)) S.daily.chestsClaimed = [false, false, false];
+    S.daily.chestsClaimed[i] = true;
+    const rewards = { jade: [20, 26, 34][i] || 20, stone: Math.round(2000 * Math.pow(3, S.player.realm) / 3) };
+    Econ.grantAll(rewards);
+    UI.toast(`Chest opened — ${Econ.rewardText(rewards)}`, 'gold');
+    Pass._badge();
+    UI.dirty('pass');
+    Save.save();
+    return true;
+  },
+
+  claimLevel(lvl) {
+    if (lvl > (S.pass.level | 0)) { UI.toast('Not reached yet.', 'bad'); return false; }
+    if (!Array.isArray(S.pass.claimed)) S.pass.claimed = [];
+    if (S.pass.claimed.indexOf(lvl) >= 0) return false;
+    const row = DATA.pass.find(p => p.lvl === lvl);
+    if (!row) return false;
+    S.pass.claimed.push(lvl);
+    Pass._grant(row.rewards || {});
+    UI.toast(`Level ${lvl} claimed`, 'gold');
+    Stats.invalidate(); Stats.recompute();
+    Pass._badge();
+    UI.dirty('pass');
+    Save.save();
+    return true;
+  },
+  claimAllLevels() {
+    let n = 0;
+    for (const row of DATA.pass) {
+      if (row.lvl <= (S.pass.level | 0) && (S.pass.claimed || []).indexOf(row.lvl) < 0) {
+        if (Pass.claimLevel(row.lvl)) n++;
+      }
+    }
+    if (!n) UI.toast('Nothing to claim.', 'bad');
+    return n;
+  },
+
+  /* Rewards may contain non-currency grants (curio / blueprint / formula). */
+  _grant(rw) {
+    const cur = {};
+    for (const k in rw) {
+      if (k === 'curio') { try { Curios.own(rw[k] === 'random' ? null : rw[k]); } catch (e) { /* optional */ } continue; }
+      if (k === 'blueprint') {
+        const id = rw[k] === 'random' ? U.pick(DATA.blueprints).id : rw[k];
+        if (!S.inv.blueprints.includes(id)) S.inv.blueprints.push(id);
+        continue;
+      }
+      if (k === 'formula') {
+        const id = rw[k] === 'random' ? U.pick(DATA.formulas).id : rw[k];
+        if (!S.inv.formulas.includes(id)) S.inv.formulas.push(id);
+        continue;
+      }
+      if (k === 'passAttempt') continue;   // read by Pass._bonus
+      cur[k] = rw[k];
+    }
+    Econ.grantAll(cur);
+  },
+
+  _badge() {
+    let n = 0;
+    for (const row of (S.daily.tasks || [])) if (row.done && !row.claimed) n++;
+    for (const row of (S.weekly.tasks || [])) if (row.done && !row.claimed) n++;
+    for (let i = 0; i < 3; i++) if (Pass.chestReady(i)) n++;
+    for (const row of DATA.pass) {
+      if (row.lvl <= (S.pass.level | 0) && (S.pass.claimed || []).indexOf(row.lvl) < 0) n++;
+    }
+    try { UI.badge('more.pass', n); } catch (e) { /* pre-boot */ }
+    return n;
+  },
+  badges() { return Pass._badge(); },
+
+  /* ---------------------------------------------------------------- panel */
+  render() {
+    const panel = UI.panel('pass');
+    if (!panel) return;
+    if (!Pass._dom || !panel.contains(Pass._dom.root)) Pass._build(panel);
+    const d = Pass._dom;
+
+    const ap = S.daily.activityPoints | 0;
+    d.ap.textContent = `${ap} activity today`;
+    d.lvl.textContent = `Level ${S.pass.level | 0} / ${CONFIG.economy.passLevels}`;
+    const per = CONFIG.economy.passPointsPerLevel;
+    d.bar.style.width = U.clamp(((S.pass.points | 0) % per) / per, 0, 1) * 100 + '%';
+
+    const sig = ap + '|' + (S.pass.level | 0) + '|' + (S.pass.claimed || []).length + '|'
+      + (S.daily.tasks || []).map(t => t.prog + (t.claimed ? 'c' : '')).join(',')
+      + '|' + (S.weekly.tasks || []).map(t => t.prog + (t.claimed ? 'c' : '')).join(',');
+    if (sig === Pass._sig) return;
+    Pass._sig = sig;
+
+    // chests
+    d.chests.innerHTML = '';
+    for (let i = 0; i < 3; i++) {
+      const need = CONFIG.economy.dailyChestPoints[i];
+      const claimed = (S.daily.chestsClaimed || [])[i];
+      const ready = Pass.chestReady(i);
+      const b = UI.el('button', 'btn sm' + (ready ? ' primary glow' : ''), claimed ? 'Opened' : (ready ? 'Open' : String(need)));
+      b.disabled = !ready;
+      if (ready) { b.dataset.act = 'chest'; b.dataset.idx = String(i); }
+      const box = UI.el('div', 'col');
+      box.appendChild(UI.el('div', 'h3', claimed ? '\u{1F4E6}' : '\u{1F381}'));
+      box.appendChild(b);
+      d.chests.appendChild(box);
+    }
+
+    d.tasks.innerHTML = '';
+    Pass._renderTasks(d.tasks, 'daily', S.daily.tasks, 'Today');
+    Pass._renderTasks(d.tasks, 'weekly', S.weekly.tasks, 'This week');
+
+    d.levels.innerHTML = '';
+    d.levels.appendChild(UI.el('div', 'sec-title serif', 'Ascension Path'));
+    const from = Math.max(1, (S.pass.level | 0) - 2);
+    for (const row of DATA.pass.filter(p => p.lvl >= from && p.lvl <= from + 11)) {
+      const owned = (S.pass.claimed || []).indexOf(row.lvl) >= 0;
+      const reached = row.lvl <= (S.pass.level | 0);
+      const b = UI.el('button', 'btn sm' + (reached && !owned ? ' primary' : ''), owned ? '✓' : (reached ? 'Claim' : 'Locked'));
+      b.disabled = owned || !reached;
+      if (reached && !owned) { b.dataset.act = 'plvl'; b.dataset.idx = String(row.lvl); }
+      let txt = '';
+      try { txt = Econ.rewardText(row.rewards || {}); } catch (e) { txt = ''; }
+      d.levels.appendChild(UI.itemCard({
+        emoji: row.lvl % 10 === 0 ? '\u{1F3C6}' : '\u{2728}',
+        name: `Level ${row.lvl}`,
+        rarity: row.lvl % 10 === 0 ? 'gold' : (owned ? 'green' : 'gray'),
+        sub: txt || 'A small kindness.',
+        right: b,
+      }));
+    }
+  },
+
+  _renderTasks(host, scope, list, title) {
+    host.appendChild(UI.el('div', 'sec-title serif', title));
+    if (!Array.isArray(list) || !list.length) {
+      host.appendChild(UI.el('div', 'empty', 'Nothing set.'));
+      return;
+    }
+    for (const row of list) {
+      const def = Pass._defOf(row.id);
+      const b = UI.el('button', 'btn sm' + (row.done && !row.claimed ? ' primary' : ''),
+        row.claimed ? '✓' : (row.done ? 'Claim' : `${row.prog}/${row.need}`));
+      b.disabled = row.claimed || !row.done;
+      if (row.done && !row.claimed) { b.dataset.act = 'task'; b.dataset.id = row.id; b.dataset.scope = scope; }
+      host.appendChild(UI.itemCard({
+        emoji: row.claimed ? '✓' : '\u{1F4CB}',
+        name: (def && def.name) || row.id,
+        rarity: row.claimed ? 'green' : 'gray',
+        sub: `+${(def && def.points) || 0} activity`,
+        right: b,
+      }));
+    }
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const head = UI.el('div', 'card tight');
+    head.innerHTML = `<div class="row between"><span class="lbl" data-f="lvl"></span>
+      <span class="val" data-f="ap"></span></div><div class="bar exp"><i data-f="bar"></i></div>
+      <div class="row between" data-f="chests" style="margin-top:8px"></div>`;
+    root.appendChild(head);
+    const bar2 = UI.el('div', 'row');
+    const ca = UI.el('button', 'btn wide', 'Claim Tasks');
+    ca.dataset.act = 'claimTasks';
+    const cl = UI.el('button', 'btn wide', 'Claim Levels');
+    cl.dataset.act = 'claimLevels';
+    bar2.appendChild(ca); bar2.appendChild(cl);
+    root.appendChild(bar2);
+    const tasks = UI.el('div', 'col'); root.appendChild(tasks);
+    const levels = UI.el('div', 'col'); root.appendChild(levels);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Pass._dom = {
+      root, tasks, levels,
+      ap: head.querySelector('[data-f="ap"]'), lvl: head.querySelector('[data-f="lvl"]'),
+      bar: head.querySelector('[data-f="bar"]'), chests: head.querySelector('[data-f="chests"]'),
+    };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      const a = el.dataset.act;
+      if (a === 'task') Pass.claimTask(el.dataset.scope, el.dataset.id);
+      else if (a === 'chest') Pass.claimChest(parseInt(el.dataset.idx, 10));
+      else if (a === 'plvl') Pass.claimLevel(parseInt(el.dataset.idx, 10));
+      else if (a === 'claimTasks') Pass.claimAllTasks();
+      else if (a === 'claimLevels') Pass.claimAllLevels();
+      Pass._sig = '';
+    });
+  },
+};
+
+/* ============================================================================
+ * Ach — achievements. Each row reads a dotted path out of the save.
+ * ==========================================================================*/
+const Ach = {
+  _dom: null, _sig: '',
+
+  init() {
+    try { UI.register('ach', () => Ach.render()); } catch (e) { /* optional */ }
+    const evts = ['breakthrough', 'huntClear', 'pillCrafted', 'gearCrafted', 'duelFight',
+      'spireClear', 'curioGain', 'techUnlock', 'respira', 'samsara', 'clashDone'];
+    for (const e of evts) { try { Bus.on(e, () => Ach.check()); } catch (err) { /* optional */ } }
+  },
+  tick(dt) {
+    Ach._acc = (Ach._acc || 0) + dt;
+    if (Ach._acc < 5) return;
+    Ach._acc = 0;
+    Ach.check();
+  },
+
+  read(pathStr) {
+    let cur = S;
+    for (const seg of String(pathStr).split('.')) {
+      if (cur == null) return 0;
+      cur = (seg === 'length') ? (cur.length || 0) : cur[seg];
+    }
+    const n = Number(cur);
+    return Number.isFinite(n) ? n : 0;
+  },
+
+  check() {
+    if (!S || !S.ach) return;
+    if (!Array.isArray(S.ach.done)) S.ach.done = [];
+    let newly = 0;
+    for (const a of DATA.achievements) {
+      if (S.ach.done.indexOf(a.id) >= 0) continue;
+      if (Ach.read(a.stat) >= a.need) { S.ach.done.push(a.id); newly++; }
+    }
+    if (newly) {
+      UI.toast(`${newly} achievement${newly > 1 ? 's' : ''} earned`, 'gold');
+      Ach._sig = '';
+      UI.dirty('ach');
+    }
+    Ach._badge();
+  },
+
+  claim(id) {
+    if (!Array.isArray(S.ach.claimed)) S.ach.claimed = [];
+    if (S.ach.done.indexOf(id) < 0 || S.ach.claimed.indexOf(id) >= 0) return false;
+    const a = DATA.achievements.find(x => x.id === id);
+    if (!a) return false;
+    S.ach.claimed.push(id);
+    Econ.grant('jade', a.jade || 0);
+    UI.toast(`+${a.jade} Fate Jade`, 'gold');
+    Ach._badge(); Ach._sig = ''; UI.dirty('ach'); Save.save();
+    return true;
+  },
+  claimAll() {
+    let n = 0;
+    for (const id of S.ach.done.slice()) if (Ach.claim(id)) n++;
+    if (!n) UI.toast('Nothing to claim.', 'bad');
+    return n;
+  },
+
+  _badge() {
+    const done = S.ach.done || [], claimed = S.ach.claimed || [];
+    const n = done.filter(id => claimed.indexOf(id) < 0).length;
+    try { UI.badge('more.ach', n); } catch (e) { /* pre-boot */ }
+    return n;
+  },
+  badges() { return Ach._badge(); },
+
+  render() {
+    const panel = UI.panel('ach');
+    if (!panel) return;
+    if (!Ach._dom || !panel.contains(Ach._dom.root)) Ach._build(panel);
+    const sig = (S.ach.done || []).length + '/' + (S.ach.claimed || []).length;
+    if (sig === Ach._sig) return;
+    Ach._sig = sig;
+
+    const d = Ach._dom;
+    d.head.textContent = `${(S.ach.done || []).length} / ${DATA.achievements.length} earned`;
+    d.list.innerHTML = '';
+    const rows = DATA.achievements.slice().sort((a, b) => {
+      const ad = S.ach.done.indexOf(a.id) >= 0, bd = S.ach.done.indexOf(b.id) >= 0;
+      const ac = (S.ach.claimed || []).indexOf(a.id) >= 0, bc = (S.ach.claimed || []).indexOf(b.id) >= 0;
+      const rank = (dn, cl) => (dn && !cl) ? 0 : (dn ? 2 : 1);
+      return rank(ad, ac) - rank(bd, bc);
+    });
+    for (const a of rows) {
+      const done = S.ach.done.indexOf(a.id) >= 0;
+      const claimed = (S.ach.claimed || []).indexOf(a.id) >= 0;
+      const have = Ach.read(a.stat);
+      const b = UI.el('button', 'btn sm' + (done && !claimed ? ' primary' : ''),
+        claimed ? '✓' : (done ? `+${a.jade}` : `${Fmt.n(have)}/${Fmt.n(a.need)}`));
+      b.disabled = claimed || !done;
+      if (done && !claimed) { b.dataset.act = 'ach'; b.dataset.id = a.id; }
+      d.list.appendChild(UI.itemCard({
+        emoji: claimed ? '\u{1F3C5}' : (done ? '\u{2B50}' : '\u{25CB}'),
+        name: a.name, rarity: claimed ? 'green' : (done ? 'gold' : 'gray'),
+        sub: a.desc, right: b,
+      }));
+    }
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const head = UI.el('div', 'card tight');
+    const h = UI.el('div', 'val'); head.appendChild(h);
+    const b = UI.el('button', 'btn sm wide', 'Claim All'); b.dataset.act = 'achAll';
+    head.appendChild(b);
+    root.appendChild(head);
+    const list = UI.el('div', 'col'); root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Ach._dom = { root, list, head: h };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      if (el.dataset.act === 'ach') Ach.claim(el.dataset.id);
+      if (el.dataset.act === 'achAll') Ach.claimAll();
+    });
+  },
+};
+
+/* ============================================================================
+ * Mail — the inbox every system uses to deliver grants.
+ * ==========================================================================*/
+const Mail = {
+  _dom: null, _sig: '',
+
+  init() { try { UI.register('mail', () => Mail.render()); } catch (e) { /* optional */ } },
+  tick() {},
+
+  /* Public: Mail.send({subject, body, rewards}) */
+  send(msg) {
+    if (!S) return null;
+    if (!Array.isArray(S.mail)) S.mail = [];
+    const m = {
+      id: U.id(),
+      subject: String((msg && msg.subject) || 'A letter'),
+      body: String((msg && msg.body) || ''),
+      rewards: (msg && msg.rewards) || {},
+      read: false, claimed: false, at: Date.now(),
+    };
+    S.mail.unshift(m);
+    while (S.mail.length > CONFIG.economy.mailCap) S.mail.pop();
+    Mail._badge(); Mail._sig = ''; UI.dirty('mail');
+    return m;
+  },
+
+  claim(id) {
+    const m = (S.mail || []).find(x => x.id === id);
+    if (!m || m.claimed) return false;
+    m.claimed = true; m.read = true;
+    if (m.rewards && Object.keys(m.rewards).length) {
+      Pass._grant(m.rewards);
+      UI.toast(Econ.rewardText(m.rewards) || 'Received.', 'good');
+    }
+    Mail._badge(); Mail._sig = ''; UI.dirty('mail'); Save.save();
+    return true;
+  },
+  claimAll() {
+    let n = 0;
+    for (const m of (S.mail || []).slice()) if (!m.claimed) { if (Mail.claim(m.id)) n++; }
+    if (!n) UI.toast('The inbox is quiet.', 'bad');
+    else UI.toast(`Claimed ${n}.`, 'good');
+    // sweep read-and-claimed letters so the box stays tidy
+    S.mail = (S.mail || []).filter(m => !m.claimed || Object.keys(m.rewards || {}).length === 0).slice(0, CONFIG.economy.mailCap);
+    Mail._sig = '';
+    return n;
+  },
+
+  _badge() {
+    const n = (S.mail || []).filter(m => !m.claimed).length;
+    try { UI.badge('more.mail', n); } catch (e) { /* pre-boot */ }
+    return n;
+  },
+  badges() { return Mail._badge(); },
+
+  render() {
+    const panel = UI.panel('mail');
+    if (!panel) return;
+    if (!Mail._dom || !panel.contains(Mail._dom.root)) Mail._build(panel);
+    const sig = (S.mail || []).map(m => m.id + (m.claimed ? 'c' : '')).join(',');
+    if (sig === Mail._sig) return;
+    Mail._sig = sig;
+
+    const d = Mail._dom;
+    d.list.innerHTML = '';
+    if (!(S.mail || []).length) {
+      d.list.appendChild(UI.el('div', 'empty', 'No letters. Somehow that is worse.'));
+      return;
+    }
+    for (const m of S.mail) {
+      const b = UI.el('button', 'btn sm' + (m.claimed ? '' : ' primary'), m.claimed ? '✓' : 'Claim');
+      b.disabled = m.claimed;
+      if (!m.claimed) { b.dataset.act = 'mail'; b.dataset.id = m.id; }
+      let rw = '';
+      try { rw = Econ.rewardText(m.rewards || {}); } catch (e) { rw = ''; }
+      d.list.appendChild(UI.itemCard({
+        emoji: m.claimed ? '\u{1F4C4}' : '\u{2709}',
+        name: m.subject, rarity: m.claimed ? 'gray' : 'blue',
+        sub: (m.body || '') + (rw ? ' — ' + rw : ''),
+        right: b,
+      }));
+    }
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const b = UI.el('button', 'btn wide primary', 'Claim All');
+    b.dataset.act = 'mailAll';
+    root.appendChild(b);
+    const list = UI.el('div', 'col'); root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Mail._dom = { root, list };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      if (el.dataset.act === 'mail') Mail.claim(el.dataset.id);
+      if (el.dataset.act === 'mailAll') Mail.claimAll();
+    });
+  },
+};
+
+
+/* ===== 63_samsara.js ===================================================== */
+/* ============================================================================
+ * Samsara — optional prestige, unlocked at Celestial.
+ *
+ * MARKS   = realmsCleared^2 + floor(maxSpireFloor / 10)
+ *           where realmsCleared is the realm index reached this cycle.
+ * KEPT    curios, achievements (done + claimed), titles, samsara tree + cycle.
+ * RESET   everything else, then the player restarts at CONFIG.samsara.startRealm
+ *         if they have bought the 'startRealm' node, else realm 0.
+ * CYCLE   each completed cycle adds CONFIG.samsara.cycleGlobalMult (15%) to
+ *         allStat and aura, on top of whatever the tree grants.
+ * ==========================================================================*/
+
+const Samsara = {
+  _dom: null, _sig: '',
+
+  init() {
+    try { Stats.provider(Samsara._bonus); } catch (e) { /* optional */ }
+    try { UI.register('samsara', () => Samsara.render()); } catch (e) { /* optional */ }
+  },
+  tick() {},
+  badges() { return 0; },
+
+  tree() { return (S && S.samsara && S.samsara.tree) || {}; },
+  lvlOf(id) { return Math.floor(Number(Samsara.tree()[id]) || 0); },
+
+  _bonus(acc) {
+    if (typeof S === 'undefined' || !S || !S.samsara) return;
+    const cycle = Math.floor(Number(S.samsara.cycle) || 0);
+    if (cycle > 0) {
+      const g = CONFIG.samsara.cycleGlobalMult * cycle;
+      acc.allStat += g;
+      acc.aura += g;
+    }
+    for (const node of DATA.samsaraTree) {
+      const lvl = Samsara.lvlOf(node.id);
+      if (!lvl) continue;
+      if (node.key === 'startRealm') continue;            // structural, not a bonus
+      if (acc[node.key] === undefined) continue;
+      acc[node.key] += (Number(node.val) || 0) * lvl;
+    }
+  },
+
+  marksIfRebornNow() {
+    const realms = Math.max(0, S.player.realm | 0);
+    const spire = Math.max(0, S.spire.best | 0);
+    return Math.floor(Math.pow(realms, CONFIG.samsara.markFormula.realmPow)
+      + spire / CONFIG.samsara.markFormula.spireDiv);
+  },
+
+  canRebirth() { return S && (S.player.realm | 0) >= CONFIG.samsara.unlockRealm; },
+
+  costOf(node) {
+    const lvl = Samsara.lvlOf(node.id);
+    return Math.round((Number(node.cost) || 1) * Math.pow(1.6, lvl));
+  },
+
+  buy(id) {
+    const node = DATA.samsaraTree.find(n => n.id === id);
+    if (!node) return false;
+    const lvl = Samsara.lvlOf(id);
+    if (lvl >= (node.max | 0)) { UI.toast('That branch is fully grown.', 'bad'); return false; }
+    const cost = Samsara.costOf(node);
+    if ((S.samsara.marks | 0) < cost) { UI.toast('Not enough Samsara Marks.', 'bad'); return false; }
+    S.samsara.marks -= cost;
+    if (!S.samsara.tree || typeof S.samsara.tree !== 'object') S.samsara.tree = {};
+    S.samsara.tree[id] = lvl + 1;
+    Stats.invalidate(); Stats.recompute();
+    UI.toast(`${node.name} ${lvl + 1}`, 'gold');
+    Samsara._sig = '';
+    UI.dirty('samsara');
+    Save.save();
+    return true;
+  },
+
+  /* -------------------------------------------------------------- rebirth */
+  rebirth() {
+    if (!Samsara.canRebirth()) { UI.toast('Not until Celestial.', 'bad'); return false; }
+    const gain = Samsara.marksIfRebornNow();
+
+    const keep = {
+      curios: U.deepClone(S.curios),
+      ach: U.deepClone(S.ach),
+      samsara: U.deepClone(S.samsara),
+      title: S.player.title,
+      name: S.player.name,
+      path: S.player.path,
+      auraColor: S.player.auraColor,
+      settings: U.deepClone(S.settings),
+      createdAt: S.createdAt,
+      story: U.deepClone(S.story),
+    };
+
+    const fresh = freshState();
+    fresh.created = true;
+    fresh.createdAt = keep.createdAt;
+    fresh.lastSeen = Date.now();
+    fresh.curios = keep.curios;
+    fresh.ach = keep.ach;
+    fresh.samsara = keep.samsara;
+    fresh.settings = keep.settings;
+    fresh.story = keep.story;
+    fresh.player.name = keep.name;
+    fresh.player.path = keep.path;
+    fresh.player.title = keep.title;
+    fresh.player.auraColor = keep.auraColor;
+
+    fresh.samsara.marks = (fresh.samsara.marks | 0) + gain;
+    fresh.samsara.cycle = (fresh.samsara.cycle | 0) + 1;
+
+    // the 'startRealm' node lets you skip the opening realms
+    const startLvl = Math.floor(Number((fresh.samsara.tree || {}).startRealm) || 0);
+    if (startLvl > 0) {
+      fresh.player.realm = U.clamp(CONFIG.samsara.startRealm, 0, CONFIG.cultivation.maxRealm);
+    }
+
+    S = fresh;
+    Stats.invalidate(); Stats.recompute();
+    Bus.emit('samsara', { cycle: S.samsara.cycle });
+    Save.saveNow();
+
+    UI.flash('gold');
+    UI.toast(`Reborn. +${Fmt.n(gain)} Samsara Marks.`, 'gold');
+    UI.dirty('cultivate', 'wilds', 'battle', 'abode', 'more', 'samsara');
+    UI.refreshBadges();
+    UI.show('cultivate');
+    return true;
+  },
+
+  confirmRebirth() {
+    const gain = Samsara.marksIfRebornNow();
+    UI.modal({
+      title: 'Samsara Rebirth',
+      body: `<p class="serif">You would begin again: realm, wealth, gear, sect, techniques — all of it returned to the wheel.</p>
+        <div class="sec">
+          <div class="kv"><span class="k">Marks gained</span><span class="v gold">+${Fmt.n(gain)}</span></div>
+          <div class="kv"><span class="k">Cycle</span><span class="v">${(S.samsara.cycle | 0) + 1}</span></div>
+          <div class="kv"><span class="k">Permanent bonus</span><span class="v good">+${Fmt.pct(CONFIG.samsara.cycleGlobalMult * ((S.samsara.cycle | 0) + 1))} all stats &amp; aura</span></div>
+        </div>
+        <p class="tiny muted">Kept: curios, achievements, titles, and the Samsara tree.</p>`,
+      buttons: [
+        { label: 'Not yet', cls: 'ghost', act: (c) => c() },
+        { label: 'Turn the wheel', cls: 'danger', act: (c) => { c(); Samsara.rebirth(); } },
+      ],
+    });
+  },
+
+  /* ---------------------------------------------------------------- panel */
+  render() {
+    const panel = UI.panel('samsara');
+    if (!panel) return;
+    if (UI.lock('samsara', CONFIG.unlocks.samsara)) return;
+    if (!Samsara._dom || !panel.contains(Samsara._dom.root)) Samsara._build(panel);
+
+    const d = Samsara._dom;
+    const sig = (S.samsara.marks | 0) + '|' + (S.samsara.cycle | 0) + '|'
+      + JSON.stringify(S.samsara.tree || {}) + '|' + (S.player.realm | 0);
+    if (sig === Samsara._sig) return;
+    Samsara._sig = sig;
+
+    d.head.innerHTML = `<div class="row between"><span class="lbl">Samsara Marks</span>
+        <span class="val gold">${Fmt.n(S.samsara.marks | 0)}</span></div>
+      <div class="row between"><span class="tiny muted">Cycle ${S.samsara.cycle | 0}</span>
+        <span class="tiny muted">Rebirth now: +${Fmt.n(Samsara.marksIfRebornNow())}</span></div>`;
+
+    d.list.innerHTML = '';
+    for (const node of DATA.samsaraTree) {
+      const lvl = Samsara.lvlOf(node.id);
+      const maxed = lvl >= (node.max | 0);
+      const cost = Samsara.costOf(node);
+      const b = UI.el('button', 'btn sm' + (!maxed && (S.samsara.marks | 0) >= cost ? ' primary' : ''),
+        maxed ? 'Max' : String(cost));
+      b.disabled = maxed || (S.samsara.marks | 0) < cost;
+      if (!b.disabled) { b.dataset.act = 'sam'; b.dataset.id = node.id; }
+      d.list.appendChild(UI.itemCard({
+        emoji: '\u{1F504}',
+        name: `${node.name} ${lvl}/${node.max}`,
+        rarity: maxed ? 'gold' : (lvl ? 'purple' : 'gray'),
+        sub: node.desc,
+        right: b,
+      }));
+    }
+    d.btn.disabled = !Samsara.canRebirth();
+    d.btn.textContent = Samsara.canRebirth() ? 'Turn the Wheel' : 'Requires Celestial';
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    const head = UI.el('div', 'card tight');
+    root.appendChild(head);
+    const btn = UI.el('button', 'btn wide danger', 'Turn the Wheel');
+    btn.dataset.act = 'rebirth';
+    root.appendChild(btn);
+    const list = UI.el('div', 'col');
+    root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Samsara._dom = { root, head, list, btn };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      if (el.dataset.act === 'rebirth') Samsara.confirmRebirth();
+      if (el.dataset.act === 'sam') Samsara.buy(el.dataset.id);
+    });
+  },
+};
+
+
+/* ===== 64_more.js ======================================================== */
+/* ============================================================================
+ * More — the menu grid that reaches every sub-panel, and
+ * Settings — export / import / hard reset, combat speed, reduced effects,
+ * plus the hidden dev-panel trigger on the version string.
+ * ==========================================================================*/
+
+const More = {
+  ITEMS: [
+    { id: 'sect', emoji: '\u{1F3EF}', name: 'Sect', desc: 'Duties, library, meditation, the weekly clash', unlock: 'sect' },
+    { id: 'techs', emoji: '\u{1F4DC}', name: 'Techniques', desc: 'Sixteen ranks of hard-won habit', unlock: 'techs' },
+    { id: 'law', emoji: '\u{26A1}', name: 'Law', desc: 'Your chosen element, and its deepening', unlock: 'law' },
+    { id: 'curios', emoji: '\u{1F5FF}', name: 'Curios', desc: 'Small strange things worth keeping', unlock: 'curios' },
+    { id: 'shops', emoji: '\u{1F3EE}', name: 'Shops', desc: 'Market, black market, library, jade, dust', unlock: 'market' },
+    { id: 'quests', emoji: '\u{1F9ED}', name: 'The Long Road', desc: 'What the old one wants next', unlock: 'quests' },
+    { id: 'pass', emoji: '\u{2728}', name: 'Ascension Path', desc: 'Daily duties and fifty levels of reward', unlock: 'quests' },
+    { id: 'ach', emoji: '\u{1F3C5}', name: 'Achievements', desc: 'Proof you did the thing', unlock: 'quests' },
+    { id: 'mail', emoji: '\u{2709}', name: 'Letters', desc: 'Everything the world owes you', unlock: 'quests' },
+    { id: 'samsara', emoji: '\u{1F504}', name: 'Samsara', desc: 'Begin again, but heavier', unlock: 'samsara' },
+    { id: 'settings', emoji: '\u{2699}', name: 'Settings', desc: 'Saves, speed, and other mundanities', unlock: 'cultivate' },
+  ],
+  _dom: null, _sig: '',
+
+  init() { try { UI.register('more', () => More.render()); } catch (e) { /* optional */ } },
+  tick() {},
+  badges() { return 0; },
+
+  render() {
+    const panel = UI.panel('more');
+    if (!panel) return;
+    if (!More._dom || !panel.contains(More._dom.root)) More._build(panel);
+
+    const realm = S.player.realm | 0;
+    const sig = realm + '|' + More.ITEMS.map(i => UI.badgeCount ? UI.badgeCount('more.' + i.id) : 0).join(',');
+    if (sig === More._sig) return;
+    More._sig = sig;
+
+    const d = More._dom;
+    d.list.innerHTML = '';
+    for (const it of More.ITEMS) {
+      const need = CONFIG.unlocks[it.unlock];
+      const locked = need !== undefined && realm < need;
+      let n = 0;
+      try { n = UI.badgeCount ? (UI.badgeCount('more.' + it.id) | 0) : 0; } catch (e) { n = 0; }
+
+      const right = UI.el('span', n > 0 ? 'badge' : 'muted', n > 0 ? String(n > 99 ? '99+' : n) : '›');
+      const card = UI.itemCard({
+        emoji: locked ? '\u{1F512}' : it.emoji,
+        name: it.name,
+        rarity: locked ? 'gray' : 'blue',
+        sub: locked ? `Unlocks at ${UI.realmName(need)}` : it.desc,
+        right,
+        act: locked ? null : 'more-go',
+        id: it.id,
+        locked,
+      });
+      d.list.appendChild(card);
+    }
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+    root.appendChild(UI.el('div', 'sec-title serif', 'Elsewhere'));
+    const list = UI.el('div', 'col');
+    root.appendChild(list);
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    More._dom = { root, list };
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act="more-go"]');
+      if (el && el.dataset.id) UI.show(el.dataset.id);
+    });
+  },
+};
+
+/* ==========================================================================*/
+const Settings = {
+  _dom: null,
+  _taps: 0, _lastTap: 0,
+
+  init() { try { UI.register('settings', () => Settings.render()); } catch (e) { /* optional */ } },
+  tick() {},
+  badges() { return 0; },
+
+  render() {
+    const panel = UI.panel('settings');
+    if (!panel) return;
+    if (!Settings._dom || !panel.contains(Settings._dom.root)) Settings._build(panel);
+    const d = Settings._dom;
+    d.speed.textContent = '×' + (S.settings.speed || 1);
+    d.fx.classList.toggle('on', !!S.settings.reduceFx);
+    d.fx.textContent = S.settings.reduceFx ? 'Reduced effects: on' : 'Reduced effects: off';
+    d.play.textContent = Fmt.dur(S.playtimeSec || 0);
+  },
+
+  _build(panel) {
+    panel.innerHTML = '';
+    const root = UI.el('div', 'scroll');
+
+    const info = UI.el('div', 'card tight');
+    info.innerHTML = `<div class="kv"><span class="k">Cultivator</span><span class="v">${UI.esc(S.player.name)}</span></div>
+      <div class="kv"><span class="k">Time spent</span><span class="v" data-f="play"></span></div>`;
+    root.appendChild(info);
+
+    const play = UI.el('div', 'card tight');
+    play.appendChild(UI.el('div', 'lbl', 'Play'));
+    const rowSpeed = UI.el('div', 'row between');
+    rowSpeed.appendChild(UI.el('span', 'k', 'Battle speed'));
+    const bSpeed = UI.el('button', 'btn sm', '×1');
+    bSpeed.dataset.act = 'speed';
+    rowSpeed.appendChild(bSpeed);
+    play.appendChild(rowSpeed);
+    const bFx = UI.el('button', 'btn wide toggle', 'Reduced effects: off');
+    bFx.dataset.act = 'fx';
+    play.appendChild(bFx);
+    root.appendChild(play);
+
+    const save = UI.el('div', 'card tight');
+    save.appendChild(UI.el('div', 'lbl', 'Save'));
+    const bx = UI.el('button', 'btn wide', 'Export Save');
+    bx.dataset.act = 'export';
+    const bi = UI.el('button', 'btn wide', 'Import Save');
+    bi.dataset.act = 'import';
+    const br = UI.el('button', 'btn wide danger', 'Hard Reset');
+    br.dataset.act = 'reset';
+    save.appendChild(bx); save.appendChild(bi); save.appendChild(br);
+    root.appendChild(save);
+
+    const about = UI.el('div', 'card tight');
+    about.innerHTML = `<p class="tiny muted">EVERDAO is a single-player idle cultivation RPG.
+      There are no advertisements and nothing to buy; every convenience in the Jade Shop is earned by playing.</p>`;
+    const ver = UI.el('div', 'tiny muted mono', 'v' + CONFIG.version);
+    ver.id = 'version';
+    about.appendChild(ver);
+    root.appendChild(about);
+
+    root.appendChild(UI.el('div', 'safe-b'));
+    panel.appendChild(root);
+    Settings._dom = { root, speed: bSpeed, fx: bFx, play: info.querySelector('[data-f="play"]') };
+
+    root.addEventListener('click', (e) => {
+      const el = e.target.closest('[data-act]');
+      if (!el) return;
+      const a = el.dataset.act;
+      if (a === 'speed') {
+        const list = CONFIG.combat.speeds;
+        const i = list.indexOf(S.settings.speed || 1);
+        S.settings.speed = list[(i + 1) % list.length];
+        UI.dirty('settings');
+      } else if (a === 'fx') {
+        S.settings.reduceFx = !S.settings.reduceFx;
+        UI.reduceFx();
+        UI.dirty('settings');
+      } else if (a === 'export') Settings.exportSave();
+      else if (a === 'import') Settings.importSave();
+      else if (a === 'reset') Settings.hardReset();
+    });
+
+    // The version string is the hidden dev-panel door: seven taps.
+    ver.addEventListener('click', () => {
+      const now = Date.now();
+      Settings._taps = (now - Settings._lastTap < 3000) ? Settings._taps + 1 : 1;
+      Settings._lastTap = now;
+      if (Settings._taps >= CONFIG.dev.unlockTaps) {
+        Settings._taps = 0;
+        try { Dev.show(); } catch (err) { UI.toast('No dev panel in this build.', 'bad'); }
+      }
+    });
+  },
+
+  exportSave() {
+    let blob = '';
+    try { blob = Save.export(); } catch (e) { UI.toast('Export failed.', 'bad'); return; }
+    const body = document.createElement('div');
+    body.innerHTML = `<p class="tiny muted">Copy this somewhere safe. It is your whole save.</p>`;
+    const ta = UI.el('textarea', 'textarea');
+    ta.value = blob;
+    ta.rows = 8;
+    ta.readOnly = true;
+    body.appendChild(ta);
+    UI.modal({
+      title: 'Export Save', body,
+      buttons: [
+        { label: 'Select All', cls: '', act: () => { ta.focus(); ta.select(); } },
+        { label: 'Done', cls: 'primary', act: (c) => c() },
+      ],
+    });
+    setTimeout(() => { try { ta.focus(); ta.select(); } catch (e) { /* fine */ } }, 60);
+  },
+
+  importSave() {
+    const body = document.createElement('div');
+    body.innerHTML = `<p class="tiny muted">Paste an exported save. This replaces everything you have now.</p>`;
+    const ta = UI.el('textarea', 'textarea');
+    ta.rows = 8;
+    ta.placeholder = 'Paste here';
+    body.appendChild(ta);
+    UI.modal({
+      title: 'Import Save', body,
+      buttons: [
+        { label: 'Cancel', cls: 'ghost', act: (c) => c() },
+        { label: 'Import', cls: 'danger', act: (c) => {
+          const r = Save.import((ta.value || '').trim());
+          if (!r || !r.ok) { UI.toast('That save could not be read: ' + ((r && r.err) || 'invalid'), 'bad'); return; }
+          c();
+          Stats.invalidate(); Stats.recompute();
+          UI.dirty('cultivate', 'wilds', 'battle', 'abode', 'more', 'settings');
+          UI.refreshBadges();
+          UI.show('cultivate');
+          UI.toast('Save restored.', 'good');
+        } },
+      ],
+    });
+  },
+
+  hardReset() {
+    UI.confirm('Hard Reset', 'This erases your cultivator entirely. There is no undo.', () => {
+      UI.confirm('Really?', 'Last chance. Everything goes.', () => {
+        try { Save.reset(); } catch (e) { /* fall through */ }
+        location.reload();
+      });
+    });
+  },
+};
+
+
 /* ===== 80_dev.js ========================================================= */
 /* ============================================================================
  * Dev — hidden developer panel (tap the version string 7x to open)
@@ -20807,7 +23903,9 @@ const Boot = {
     }
 
     if (!returning) {
-      try { Story.beat && Story.beat('intro'); } catch (e) { console.error(e); }
+      try {
+        if (typeof Story !== 'undefined' && Story && Story.beat) Story.beat('intro');
+      } catch (e) { console.error(e); }
     }
     try { Save.saveNow(); } catch (e) { /* ignore */ }
   },
