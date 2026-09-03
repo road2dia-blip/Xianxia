@@ -1,0 +1,46 @@
+# ---- Unreal Engine 5 (Project Ascension) ----
+# Generated / cached
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Build/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+.vs/
+.vscode/
+.idea/
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+*.suo
+*.xcodeproj
+*.xcworkspace
+*.sln
+*.code-workspace
+*.uatbuildrecord
+.ubtignore
+
+# Packaged builds
+Packaged/
+WindowsNoEditor/
+Windows/
+Linux/
+
+# Local config
+Config/DefaultEditorPerProjectUserSettings.ini
+Config/*PerProjectUserSettings.ini
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+
+# Tooling scratch
+Tools/Ladder/out/
+StubCompile/
