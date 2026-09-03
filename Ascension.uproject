@@ -1,0 +1,59 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "Games",
+	"Description": "Project Ascension: a single-player classless cultivation game. Sit in stillness, extend the aura, gather the world's Qi, and draw it inward through nine Realms of nine Layers.",
+	"Modules": [
+		{
+			"Name": "Ascension",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"AdditionalDependencies": [
+				"Engine",
+				"EnhancedInput",
+				"GameplayTags",
+				"UMG"
+			]
+		},
+		{
+			"Name": "AscensionEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EnhancedInput",
+			"Enabled": true
+		},
+		{
+			"Name": "Niagara",
+			"Enabled": true
+		},
+		{
+			"Name": "Metasound",
+			"Enabled": true
+		},
+		{
+			"Name": "ControlRig",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}
+	],
+	"TargetPlatforms": [
+		"Windows"
+	]
+}
