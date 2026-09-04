@@ -59,7 +59,7 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ascension|Auto", meta = (ClampMin = "0", ClampMax = "1"))
 	float AutoChargeTarget = 0.85f;
 
-	/** A Pure wisp must be within this fraction of AuraReach before Auto charges (charter 7.11 gives no number; see DECISIONS). Stack: AscensionProps::AutoPulseRange. */
+	/** A Pure wisp must be within this fraction of AuraReach before Auto charges (charter 7.11 gives no number; 0.6 per D-0024). Stack: AscensionProps::AutoPulseRange. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ascension|Auto", meta = (ClampMin = "0", ClampMax = "1"))
 	float AutoPulseRange = 0.6f;
 

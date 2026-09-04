@@ -33,7 +33,7 @@ bool URealmLadderEditorLibrary::RegenerateLadderTable(UDA_RealmLadderConfig* Con
 		return false;
 	}
 
-	UE_LOG(LogAscensionEditor, Display, TEXT("RegenerateLadderTable: %d rows written to %s from %s."),
+	UE_LOG(LogAscension, Display, TEXT("RegenerateLadderTable: %d rows written to %s from %s."),
 		RowsWritten, *Table->GetPathName(), *Config->GetPathName());
 
 	if (bSave)
@@ -47,16 +47,16 @@ int32 URealmLadderEditorLibrary::FillTable(const UDA_RealmLadderConfig* Config, 
 {
 	if (!Config)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("FillTable: Config is null. Create DA_RealmLadderConfig first (Content/Python/ascension_m0_setup.py)."));
+		UE_LOG(LogAscension, Error, TEXT("FillTable: Config is null. Create DA_RealmLadderConfig first (Content/Python/ascension_m0_setup.py)."));
 		return -1;
 	}
 	if (!Table)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("FillTable: Table is null."));
+		UE_LOG(LogAscension, Error, TEXT("FillTable: Table is null."));
 		return -1;
 	}
 
-	const UScriptStruct* RowStruct = FRealmLayerRow::StaticStruct();
+	UScriptStruct* RowStruct = FRealmLayerRow::StaticStruct();	// non-const: assignable to UDataTable::RowStruct whether it is TObjectPtr<UScriptStruct> or TObjectPtr<const UScriptStruct>
 	if (Table->GetRowStruct() == nullptr && Table->GetRowMap().Num() == 0)
 	{
 		// A freshly created, never-typed table: adopt the ladder row struct.
@@ -64,7 +64,7 @@ int32 URealmLadderEditorLibrary::FillTable(const UDA_RealmLadderConfig* Config, 
 	}
 	else if (Table->GetRowStruct() != RowStruct)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("FillTable: %s has row struct %s, expected %s. Refusing to overwrite a table of another type."),
+		UE_LOG(LogAscension, Error, TEXT("FillTable: %s has row struct %s, expected %s. Refusing to overwrite a table of another type."),
 			*Table->GetPathName(),
 			Table->GetRowStruct() ? *Table->GetRowStruct()->GetName() : TEXT("(none)"),
 			*RowStruct->GetName());
@@ -75,7 +75,7 @@ int32 URealmLadderEditorLibrary::FillTable(const UDA_RealmLadderConfig* Config, 
 	URealmLadderLibrary::GenerateLadderRows(Config, Rows);
 	if (Rows.Num() != ExpectedLadderRows)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("FillTable: generator produced %d rows, expected %d. Table left unchanged."), Rows.Num(), ExpectedLadderRows);
+		UE_LOG(LogAscension, Error, TEXT("FillTable: generator produced %d rows, expected %d. Table left unchanged."), Rows.Num(), ExpectedLadderRows);
 		return -1;
 	}
 
@@ -88,7 +88,7 @@ int32 URealmLadderEditorLibrary::FillTable(const UDA_RealmLadderConfig* Config, 
 		Table->AddRow(RowName, Row);
 		if (bLogRows)
 		{
-			UE_LOG(LogAscensionEditor, Display, TEXT("%s"), *URealmLadderLibrary::RowToString(Row));
+			UE_LOG(LogAscension, Display, TEXT("%s"), *URealmLadderLibrary::RowToString(Row));
 		}
 	}
 
@@ -106,7 +106,7 @@ bool URealmLadderEditorLibrary::SaveTablePackage(UDataTable* Table)
 	UPackage* Package = Table->GetOutermost();
 	if (!Package || Package == GetTransientPackage())
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("SaveTablePackage: %s is not in a saveable package."), *Table->GetPathName());
+		UE_LOG(LogAscension, Error, TEXT("SaveTablePackage: %s is not in a saveable package."), *Table->GetPathName());
 		return false;
 	}
 
@@ -121,11 +121,11 @@ bool URealmLadderEditorLibrary::SaveTablePackage(UDataTable* Table)
 	const bool bSaved = UPackage::SavePackage(Package, Table, *FileName, SaveArgs);
 	if (bSaved)
 	{
-		UE_LOG(LogAscensionEditor, Display, TEXT("SaveTablePackage: saved %s -> %s"), *PackageName, *FileName);
+		UE_LOG(LogAscension, Display, TEXT("SaveTablePackage: saved %s -> %s"), *PackageName, *FileName);
 	}
 	else
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("SaveTablePackage: failed to save %s -> %s"), *PackageName, *FileName);
+		UE_LOG(LogAscension, Error, TEXT("SaveTablePackage: failed to save %s -> %s"), *PackageName, *FileName);
 	}
 	return bSaved;
 }
@@ -150,7 +150,7 @@ UDA_RealmLadderConfig* URealmLadderEditorLibrary::LoadConfigAsset(const FString&
 	UDA_RealmLadderConfig* Config = LoadObject<UDA_RealmLadderConfig>(nullptr, *ObjectPath);
 	if (!Config)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("LoadConfigAsset: %s not found. The commandlet never creates the config; run Content/Python/ascension_m0_setup.py in the editor first, or pass -Config=<asset path>."), *ObjectPath);
+		UE_LOG(LogAscension, Error, TEXT("LoadConfigAsset: %s not found. The commandlet never creates the config; run Content/Python/ascension_m0_setup.py in the editor first, or pass -Config=<asset path>."), *ObjectPath);
 	}
 	return Config;
 }
@@ -165,7 +165,7 @@ UDataTable* URealmLadderEditorLibrary::LoadOrCreateTableAsset(const FString& Ass
 
 	if (PackageName.IsEmpty() || AssetName.IsEmpty() || !FPackageName::IsValidLongPackageName(PackageName))
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("LoadOrCreateTableAsset: '%s' is not a valid long package path (expected e.g. /Game/Ascension/Data/DT_RealmLadder)."), *AssetPath);
+		UE_LOG(LogAscension, Error, TEXT("LoadOrCreateTableAsset: '%s' is not a valid long package path (expected e.g. /Game/Ascension/Data/DT_RealmLadder)."), *AssetPath);
 		return nullptr;
 	}
 
@@ -174,7 +174,7 @@ UDataTable* URealmLadderEditorLibrary::LoadOrCreateTableAsset(const FString& Ass
 		UDataTable* Existing = LoadObject<UDataTable>(nullptr, *ObjectPath);
 		if (!Existing)
 		{
-			UE_LOG(LogAscensionEditor, Error, TEXT("LoadOrCreateTableAsset: package %s exists but %s could not be loaded as a UDataTable."), *PackageName, *ObjectPath);
+			UE_LOG(LogAscension, Error, TEXT("LoadOrCreateTableAsset: package %s exists but %s could not be loaded as a UDataTable."), *PackageName, *ObjectPath);
 		}
 		return Existing;
 	}
@@ -182,7 +182,7 @@ UDataTable* URealmLadderEditorLibrary::LoadOrCreateTableAsset(const FString& Ass
 	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("LoadOrCreateTableAsset: CreatePackage(%s) failed."), *PackageName);
+		UE_LOG(LogAscension, Error, TEXT("LoadOrCreateTableAsset: CreatePackage(%s) failed."), *PackageName);
 		return nullptr;
 	}
 	Package->FullyLoad();
@@ -190,7 +190,7 @@ UDataTable* URealmLadderEditorLibrary::LoadOrCreateTableAsset(const FString& Ass
 	UDataTable* Table = NewObject<UDataTable>(Package, *AssetName, RF_Public | RF_Standalone);
 	if (!Table)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("LoadOrCreateTableAsset: NewObject<UDataTable>(%s) failed."), *ObjectPath);
+		UE_LOG(LogAscension, Error, TEXT("LoadOrCreateTableAsset: NewObject<UDataTable>(%s) failed."), *ObjectPath);
 		return nullptr;
 	}
 	Table->RowStruct = FRealmLayerRow::StaticStruct();
@@ -198,6 +198,6 @@ UDataTable* URealmLadderEditorLibrary::LoadOrCreateTableAsset(const FString& Ass
 	Table->MarkPackageDirty();
 
 	bOutCreated = true;
-	UE_LOG(LogAscensionEditor, Display, TEXT("LoadOrCreateTableAsset: created %s (RowStruct=%s)."), *ObjectPath, *FRealmLayerRow::StaticStruct()->GetName());
+	UE_LOG(LogAscension, Display, TEXT("LoadOrCreateTableAsset: created %s (RowStruct=%s)."), *ObjectPath, *FRealmLayerRow::StaticStruct()->GetName());
 	return Table;
 }

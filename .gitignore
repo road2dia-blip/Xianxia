@@ -22,11 +22,11 @@ Plugins/*/Intermediate/
 *.uatbuildrecord
 .ubtignore
 
-# Packaged builds
-Packaged/
-WindowsNoEditor/
-Windows/
-Linux/
+# Packaged builds (anchored to the repo root so Config/Windows/ and Build/Windows/ are never swallowed)
+/Packaged/
+/WindowsNoEditor/
+/Windows/
+/Linux/
 
 # Local config
 Config/DefaultEditorPerProjectUserSettings.ini
@@ -41,6 +41,6 @@ desktop.ini
 __pycache__/
 *.pyc
 
-# Tooling scratch
+# Tooling scratch. Tools/Ladder/out/ is regenerable (its rows are embedded in docs/CHANGELOG.md);
+# Tools/StubCompile/ itself is tracked -- its generated/ and logs/ are ignored by Tools/StubCompile/.gitignore.
 Tools/Ladder/out/
-StubCompile/

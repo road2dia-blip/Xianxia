@@ -3,15 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Logging/LogMacros.h"
 #include "Modules/ModuleInterface.h"
+#include "AscensionLog.h"
 
-/**
- * Editor-module log category. The runtime category LogAscension is declared without an export macro in
- * Source/Ascension/AscensionLog.h, so it cannot be referenced across the module boundary in a modular editor
- * build; the editor module logs through its own category instead (see DECISIONS for the Milestone 0 note).
- */
-DECLARE_LOG_CATEGORY_EXTERN(LogAscensionEditor, Log, All);
+// Logging: the editor module uses the runtime category LogAscension (exported from Source/Ascension/AscensionLog.h),
+// as the contract's global rule requires; there is no separate editor category.
 
 /**
  * FAscensionEditorModule (D-0009): the editor-only module that hosts URealmLadderCommandlet and

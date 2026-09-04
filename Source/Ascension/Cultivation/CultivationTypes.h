@@ -42,8 +42,10 @@ enum class EModifierOp : uint8
 };
 
 /**
- * Cosmetic grouping of the nine Layers of a Realm (charter 6.1): 1-3 Early, 4-6 Middle, 7-8 Late, 9 Peak.
- * Used by UI and by a few Mantra conditions; adds no mechanics.
+ * Cosmetic grouping of the nine Layers of a Realm (charter 6.1): 1-3 Early, 4-6 Middle, 7-9 Late, and Layer 9 is
+ * also Peak. As a single value per Layer, URealmLadderLibrary::GetStage returns Peak for Layer 9 (D-0025); publishers of
+ * Ascension.State.Layer.* must add both Layer.Late and Layer.Peak at Layer 9 (use IsPeak). Used by UI and by a few
+ * Mantra conditions; adds no mechanics.
  */
 UENUM(BlueprintType)
 enum class ERealmStage : uint8

@@ -19,7 +19,7 @@ URealmLadderCommandlet::URealmLadderCommandlet()
 
 int32 URealmLadderCommandlet::Main(const FString& Params)
 {
-	UE_LOG(LogAscensionEditor, Display, TEXT("RealmLadder commandlet: params '%s'"), *Params);
+	UE_LOG(LogAscension, Display, TEXT("RealmLadder commandlet: params '%s'"), *Params);
 
 	FString ConfigPath = URealmLadderEditorLibrary::DefaultConfigAssetPath();
 	FString TablePath = URealmLadderEditorLibrary::DefaultTableAssetPath();
@@ -40,21 +40,21 @@ int32 URealmLadderCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
-	UE_LOG(LogAscensionEditor, Display, TEXT("RealmLadder commandlet: config %s, table %s (%s)."),
+	UE_LOG(LogAscension, Display, TEXT("RealmLadder commandlet: config %s, table %s (%s)."),
 		*Config->GetPathName(), *Table->GetPathName(), bCreated ? TEXT("created") : TEXT("loaded"));
 
 	const int32 RowsWritten = URealmLadderEditorLibrary::FillTable(Config, Table, /*bLogRows*/ true);
 	const int32 ExpectedRows = URealmLadderLibrary::NumRealms * URealmLadderLibrary::NumLayers;
 	if (RowsWritten != ExpectedRows)
 	{
-		UE_LOG(LogAscensionEditor, Error, TEXT("RealmLadder commandlet: expected %d rows, got %d."), ExpectedRows, RowsWritten);
+		UE_LOG(LogAscension, Error, TEXT("RealmLadder commandlet: expected %d rows, got %d."), ExpectedRows, RowsWritten);
 		return 1;
 	}
-	UE_LOG(LogAscensionEditor, Display, TEXT("RealmLadder commandlet: %d rows written to %s."), RowsWritten, *Table->GetPathName());
+	UE_LOG(LogAscension, Display, TEXT("RealmLadder commandlet: %d rows written to %s."), RowsWritten, *Table->GetPathName());
 
 	if (bNoSave)
 	{
-		UE_LOG(LogAscensionEditor, Display, TEXT("RealmLadder commandlet: -NoSave given; package left dirty and unsaved."));
+		UE_LOG(LogAscension, Display, TEXT("RealmLadder commandlet: -NoSave given; package left dirty and unsaved."));
 		return 0;
 	}
 
@@ -63,6 +63,6 @@ int32 URealmLadderCommandlet::Main(const FString& Params)
 		return 1;
 	}
 
-	UE_LOG(LogAscensionEditor, Display, TEXT("RealmLadder commandlet: done."));
+	UE_LOG(LogAscension, Display, TEXT("RealmLadder commandlet: done."));
 	return 0;
 }

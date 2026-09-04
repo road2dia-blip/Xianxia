@@ -2,7 +2,10 @@
 // Offline twin: Tools/Ladder/generate_realm_ladder.py. Change a constant in both places.
 
 #include "Cultivation/RealmLadder.h"
+#include "AscensionGameplayTags.h"
 #include "AscensionLog.h"
+
+#include <initializer_list>
 
 #define LOCTEXT_NAMESPACE "AscensionRealmLadder"
 
@@ -11,36 +14,27 @@ const FPrimaryAssetType UDA_RealmLadderConfig::PrimaryAssetType(TEXT("RealmLadde
 namespace
 {
 	/**
-	 * Request a tag by name without erroring. This runs inside the CDO constructor: the GameplayTags manager exists
-	 * by then (the GameplayTags module starts before ours), but a tag missing from Config/DefaultGameplayTags.ini
-	 * would otherwise log an error per request. ErrorIfNotFound=false returns an empty tag instead; the tag audit
-	 * in Milestone 0 verification reports any empty entry.
+	 * Build a container from native tags (AscensionGameplayTags.h). FNativeGameplayTag converts to FGameplayTag without
+	 * consulting UGameplayTagsManager: its tag is constructed from the FName at static init, before any CDO exists, so
+	 * this is safe inside the CDO constructor and can never silently drop a tag the way a string lookup could.
 	 */
-	FGameplayTag SafeTag(const TCHAR* TagName)
-	{
-		return FGameplayTag::RequestGameplayTag(FName(TagName), /*ErrorIfNotFound=*/false);
-	}
-
-	FGameplayTagContainer MakeTags(std::initializer_list<const TCHAR*> TagNames)
+	FGameplayTagContainer MakeTags(std::initializer_list<FGameplayTag> Tags)
 	{
 		FGameplayTagContainer Container;
-		for (const TCHAR* Name : TagNames)
+		for (const FGameplayTag& Tag : Tags)
 		{
-			const FGameplayTag Tag = SafeTag(Name);
-			if (Tag.IsValid())
-			{
-				Container.AddTag(Tag);
-			}
+			Container.AddTag(Tag);
 		}
 		return Container;
 	}
 
-	TArray<FName> MakeNames(std::initializer_list<const TCHAR*> Names)
+	/** Mantra ids are the UDA_Mantra::MantraId tag names (e.g. "Ascension.Mantra.Basic"), taken from the native tags. */
+	TArray<FName> MakeNames(std::initializer_list<FGameplayTag> Tags)
 	{
 		TArray<FName> Out;
-		for (const TCHAR* Name : Names)
+		for (const FGameplayTag& Tag : Tags)
 		{
-			Out.Add(FName(Name));
+			Out.Add(Tag.GetTagName());
 		}
 		return Out;
 	}
@@ -56,8 +50,6 @@ namespace
 		}
 		return FName(*Full);
 	}
-
-	const TCHAR* const GenericNatureTagName = TEXT("Ascension.Qi.Nature.Generic");
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +58,7 @@ namespace
 UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 {
 	// Charter table 6.2, one entry per Major Realm. Names are provisional (the owner may rename them); the structure is not.
-	// Theme colours are Milestone 0 placeholders for the "hint" names in the Python twin (see DECISIONS: Realm theme colours).
+	// Theme colours are Milestone 0 placeholders named after the "hint" names in the Python twin (D-0022).
 	Realms.Reset(URealmLadderLibrary::NumRealms);
 
 	{
@@ -76,12 +68,12 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm1Theme", "Learning to perceive. The aura is small and unsteady.");
 		R.ThemeColor = FLinearColor(0.80f, 0.82f, 0.85f);	// PaleSilver
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.Circulation"), TEXT("Ascension.System.Pulse"), TEXT("Ascension.System.Stability"),
-			TEXT("Ascension.System.BasicMantra"), TEXT("Ascension.System.Breakthrough"), TEXT("Ascension.System.Tribulation"),
-			TEXT("Ascension.System.AutoCultivation"), TEXT("Ascension.System.DebugOverlay") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Generic") });
-		R.UnlockedQiConditions = MakeTags({ TEXT("Ascension.Qi.Condition.Pure"), TEXT("Ascension.Qi.Condition.Impure") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.Basic"), TEXT("Ascension.Mantra.Stillness") });
+			AscensionTags::System_Circulation, AscensionTags::System_Pulse, AscensionTags::System_Stability,
+			AscensionTags::System_BasicMantra, AscensionTags::System_Breakthrough, AscensionTags::System_Tribulation,
+			AscensionTags::System_AutoCultivation, AscensionTags::System_DebugOverlay });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Generic });
+		R.UnlockedQiConditions = MakeTags({ AscensionTags::Qi_Condition_Pure, AscensionTags::Qi_Condition_Impure });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_Basic, AscensionTags::Mantra_Stillness });
 		R.DaoNodeDepthUnlocked = 0;
 		R.Responsibility = LOCTEXT("Realm1Responsibility", "Do not absorb Impure Qi carelessly.");
 		R.NewSystemSummary = LOCTEXT("Realm1System", "Circulation, Pulse, Pure and Impure Qi, Stability, the Basic Mantra.");
@@ -93,9 +85,9 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm2Theme", "Compressing Qi into the Dantian.");
 		R.ThemeColor = FLinearColor(0.45f, 0.60f, 0.95f);	// MoonBlue
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.Purity"), TEXT("Ascension.System.RefinementPulse"), TEXT("Ascension.System.DantianCapacity"),
-			TEXT("Ascension.System.DaoUnlock"), TEXT("Ascension.System.Techniques") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Yin"), TEXT("Ascension.Qi.Nature.Yang") });
+			AscensionTags::System_Purity, AscensionTags::System_RefinementPulse, AscensionTags::System_DantianCapacity,
+			AscensionTags::System_DaoUnlock, AscensionTags::System_Techniques });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Yin, AscensionTags::Qi_Nature_Yang });
 		R.DaoNodeDepthUnlocked = 1;
 		R.Responsibility = LOCTEXT("Realm2Responsibility", "Manage Purity; Impure Qi now contaminates.");
 		R.NewSystemSummary = LOCTEXT("Realm2System", "Purity meter, Refinement Pulse (hold, then double-tap), Dantian capacity, first Dao unlock.");
@@ -107,10 +99,10 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm3Theme", "Building a lasting base. Aura becomes coherent.");
 		R.ThemeColor = FLinearColor(0.95f, 0.55f, 0.15f);	// EmberAmber
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.DensityLayers"), TEXT("Ascension.System.SecondMantraChoice"),
-			TEXT("Ascension.System.DaoInsight"), TEXT("Ascension.System.AnchorDrift") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Fire"), TEXT("Ascension.Qi.Nature.Water") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.HeavenlyLight"), TEXT("Ascension.Mantra.FireGod") });
+			AscensionTags::System_DensityLayers, AscensionTags::System_SecondMantraChoice, AscensionTags::System_DaoInsight,
+			AscensionTags::System_AnchorDrift });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Fire, AscensionTags::Qi_Nature_Water });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_HeavenlyLight, AscensionTags::Mantra_FireGod });
 		R.DaoNodeDepthUnlocked = 2;
 		R.Responsibility = LOCTEXT("Realm3Responsibility", "Density must be balanced; an over-dense inner layer rejects Qi.");
 		R.NewSystemSummary = LOCTEXT("Realm3System", "Aura density layers (inner and outer), second Mantra choice, Dao Insight generation, Anchor drift.");
@@ -122,8 +114,8 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm4Theme", "Forming a Golden Core. The Dantian becomes a structure.");
 		R.ThemeColor = FLinearColor(1.00f, 0.80f, 0.25f);	// GoldenCore
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.Core"), TEXT("Ascension.System.CirculationMomentum"), TEXT("Ascension.System.Keystone") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Wood"), TEXT("Ascension.Qi.Nature.Metal") });
+			AscensionTags::System_Core, AscensionTags::System_CirculationMomentum, AscensionTags::System_Keystone });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Wood, AscensionTags::Qi_Nature_Metal });
 		R.DaoNodeDepthUnlocked = 3;
 		R.Responsibility = LOCTEXT("Realm4Responsibility", "The Core can crack; a cracked Core halves absorption until repaired by Pure Qi.");
 		R.NewSystemSummary = LOCTEXT("Realm4System", "The Core (a persistent Dantian with its own stability), circulation momentum, Keystone Dao nodes.");
@@ -135,10 +127,10 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm5Theme", "A second self within.");
 		R.ThemeColor = FLinearColor(0.30f, 0.80f, 0.55f);	// JadeGreen
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.SplitCirculation"), TEXT("Ascension.System.AutoFullEfficiency"),
-			TEXT("Ascension.System.ThirdMantraChoice"), TEXT("Ascension.System.LayerModifier") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Earth") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.YinYang") });
+			AscensionTags::System_SplitCirculation, AscensionTags::System_AutoFullEfficiency, AscensionTags::System_ThirdMantraChoice,
+			AscensionTags::System_LayerModifier });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Earth });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_YinYang });
 		R.DaoNodeDepthUnlocked = 4;
 		R.Responsibility = LOCTEXT("Realm5Responsibility", "Two layers must not oppose each other for long; opposition drains Stability.");
 		R.NewSystemSummary = LOCTEXT("Realm5System", "Split circulation (inner and outer layers rotate independently), full-efficiency automatic cultivation, third Mantra choice.");
@@ -150,10 +142,10 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm6Theme", "Refining the self. Impurity becomes a resource.");
 		R.ThemeColor = FLinearColor(0.55f, 0.30f, 0.80f);	// VioletDusk
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.CorruptedQi"), TEXT("Ascension.System.DevouringMantra"), TEXT("Ascension.System.DaoExpression") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Life") });
-		R.UnlockedQiConditions = MakeTags({ TEXT("Ascension.Qi.Condition.Corrupted") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.DemonicDevouring") });
+			AscensionTags::System_CorruptedQi, AscensionTags::System_DevouringMantra, AscensionTags::System_DaoExpression });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Life });
+		R.UnlockedQiConditions = MakeTags({ AscensionTags::Qi_Condition_Corrupted });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_DemonicDevouring });
 		R.DaoNodeDepthUnlocked = 5;
 		R.Responsibility = LOCTEXT("Realm6Responsibility", "Corrupted Qi can corrupt the Core; corruption is a persistent state with its own visual.");
 		R.NewSystemSummary = LOCTEXT("Realm6System", "Corrupted Qi (high Insight at high risk), the Devouring Mantra, Dao Expression nodes.");
@@ -164,10 +156,9 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.DisplayName = LOCTEXT("Realm7Name", "Void Refinement");
 		R.Theme = LOCTEXT("Realm7Theme", "Cultivating in emptiness. The aura becomes a domain.");
 		R.ThemeColor = FLinearColor(0.20f, 0.15f, 0.50f);	// VoidIndigo
-		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.Domain"), TEXT("Ascension.System.RealmWaveLayers") });
-		R.UnlockedQiNatures = MakeTags({ TEXT("Ascension.Qi.Nature.Void") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.VoidStillness") });
+		R.UnlockedSystems = MakeTags({ AscensionTags::System_Domain, AscensionTags::System_RealmWaveLayers });
+		R.UnlockedQiNatures = MakeTags({ AscensionTags::Qi_Nature_Void });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_VoidStillness });
 		R.DaoNodeDepthUnlocked = 6;
 		R.Responsibility = LOCTEXT("Realm7Responsibility", "Void Qi reduces reach if absorbed carelessly; the domain can shrink.");
 		R.NewSystemSummary = LOCTEXT("Realm7System", "The Domain: the Cultivation Space itself becomes the aura. Void Qi. Realm-scale wave layers.");
@@ -179,9 +170,9 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm8Theme", "Merging path and self.");
 		R.ThemeColor = FLinearColor(0.95f, 0.95f, 1.00f);	// TwinWhite
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.DualMantra"), TEXT("Ascension.System.SecondKeystone"), TEXT("Ascension.System.DaoResonance") });
-		R.UnlockedQiConditions = MakeTags({ TEXT("Ascension.Qi.Condition.Refined") });
-		R.UnlockedMantras = MakeNames({ TEXT("Ascension.Mantra.Integration") });
+			AscensionTags::System_DualMantra, AscensionTags::System_SecondKeystone, AscensionTags::System_DaoResonance });
+		R.UnlockedQiConditions = MakeTags({ AscensionTags::Qi_Condition_Refined });
+		R.UnlockedMantras = MakeNames({ AscensionTags::Mantra_Integration });
 		R.DaoNodeDepthUnlocked = 7;
 		R.Responsibility = LOCTEXT("Realm8Responsibility", "Resonance can overload; uncontrolled overload causes Qi Deviation.");
 		R.NewSystemSummary = LOCTEXT("Realm8System", "Dual active Mantras with conflict rules, a second Keystone, Dao resonance, Refined Qi.");
@@ -193,7 +184,7 @@ UDA_RealmLadderConfig::UDA_RealmLadderConfig()
 		R.Theme = LOCTEXT("Realm9Theme", "Transcending the mortal frame.");
 		R.ThemeColor = FLinearColor(1.00f, 0.90f, 0.60f);	// HeavenGold
 		R.UnlockedSystems = MakeTags({
-			TEXT("Ascension.System.AscensionPulse"), TEXT("Ascension.System.FinalDaoNodes"), TEXT("Ascension.System.Endgame") });
+			AscensionTags::System_AscensionPulse, AscensionTags::System_FinalDaoNodes, AscensionTags::System_Endgame });
 		R.DaoNodeDepthUnlocked = 8;
 		R.Responsibility = LOCTEXT("Realm9Responsibility", "Every action has a tenfold consequence; instability is catastrophic.");
 		R.NewSystemSummary = LOCTEXT("Realm9System", "The Ascension Pulse (a field-wide contraction that consumes the domain), the final Dao nodes, the end state.");
@@ -295,12 +286,12 @@ FRealmLayerRow URealmLadderLibrary::ComputeRow(const UDA_RealmLadderConfig* Conf
 
 	// nature_weights(): every nature introduced at or below this Realm, in Realm order (D-0006).
 	Row.NatureWeights.Reset();
-	const FGameplayTag GenericTag = SafeTag(GenericNatureTagName);
+	const FGameplayTag GenericTag = AscensionTags::Qi_Nature_Generic;
 	for (int32 RealmIndex = 0; RealmIndex < Realm && RealmIndex < Config->Realms.Num(); ++RealmIndex)
 	{
 		for (const FGameplayTag& NatureTag : Config->Realms[RealmIndex].UnlockedQiNatures)
 		{
-			const bool bGeneric = GenericTag.IsValid() ? NatureTag.MatchesTagExact(GenericTag) : (TagLeafName(NatureTag) == FName(TEXT("Generic")));
+			const bool bGeneric = NatureTag.MatchesTagExact(GenericTag);
 			Row.NatureWeights.Add(TagLeafName(NatureTag), static_cast<float>(bGeneric ? Config->GenericNatureWeight : Config->UnlockedNatureWeight));
 		}
 	}

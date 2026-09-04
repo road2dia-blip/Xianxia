@@ -11,7 +11,8 @@ DA_RealmLadderConfig (the in-engine source of truth) and mirror it here.
 Outputs (relative to project root):
   Content/Ascension/Data/DT_RealmLadder.csv    UE DataTable CSV import (FRealmLayerRow)
   Content/Ascension/Data/DT_RealmLadder.json   UE DataTable JSON import (preferred; maps import cleanly)
-  Tools/Ladder/out/ladder_table.md             Markdown table for CHANGELOG / review
+  Tools/Ladder/out/ladder_table.md             Markdown table for CHANGELOG / review (git-ignored scratch: regenerate it;
+                                               the rows themselves are embedded in docs/CHANGELOG.md)
 
 Usage:
   python3 Tools/Ladder/generate_realm_ladder.py            # write all outputs

@@ -28,17 +28,52 @@ void AAscensionPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Charter 8: IMC_World is active outside meditation. The context swap on enter/exit is the only other place contexts change.
+	ResolveInputAssetsFromSettings();
+
+	// Charter 8: IMC_World is active outside meditation. The context swap on enter/exit (M1) is the only other place contexts change.
 	MeditationState = EMeditationState::InWorld;
 	if (!SetMappingContextActive(IMC_World, true))
 	{
-		UE_LOG(LogAscension, Warning, TEXT("AAscensionPlayerController::BeginPlay: IMC_World could not be added (unassigned, or no Enhanced Input subsystem). World controls are inactive."));
+		UE_LOG(LogAscension, Warning, TEXT("AAscensionPlayerController::BeginPlay: IMC_World could not be added (unassigned here and in Project Settings -> Game -> Ascension -> Input, or no Enhanced Input subsystem). World controls are inactive."));
+	}
+}
+
+void AAscensionPlayerController::ResolveInputAssetsFromSettings()
+{
+	const UAscensionSettings* Settings = UAscensionSettings::Get();
+	if (!Settings)
+	{
+		return;
+	}
+
+	// Only fill what a Blueprint subclass (M1) did not assign. LoadSynchronous on a null soft path returns null, which is tolerated.
+	if (!IMC_World && !Settings->WorldMappingContext.IsNull())
+	{
+		IMC_World = Settings->WorldMappingContext.LoadSynchronous();
+		UE_CLOG(!IMC_World, LogAscension, Warning, TEXT("AAscensionPlayerController: WorldMappingContext %s failed to load."), *Settings->WorldMappingContext.ToString());
+	}
+	if (!IMC_Cultivation && !Settings->CultivationMappingContext.IsNull())
+	{
+		IMC_Cultivation = Settings->CultivationMappingContext.LoadSynchronous();
+		UE_CLOG(!IMC_Cultivation, LogAscension, Warning, TEXT("AAscensionPlayerController: CultivationMappingContext %s failed to load."), *Settings->CultivationMappingContext.ToString());
+	}
+	if (!IA_DebugOverlay && !Settings->DebugOverlayAction.IsNull())
+	{
+		IA_DebugOverlay = Settings->DebugOverlayAction.LoadSynchronous();
+		UE_CLOG(!IA_DebugOverlay, LogAscension, Warning, TEXT("AAscensionPlayerController: DebugOverlayAction %s failed to load."), *Settings->DebugOverlayAction.ToString());
+	}
+	if (!IA_DebugPanel && !Settings->DebugPanelAction.IsNull())
+	{
+		IA_DebugPanel = Settings->DebugPanelAction.LoadSynchronous();
+		UE_CLOG(!IA_DebugPanel, LogAscension, Warning, TEXT("AAscensionPlayerController: DebugPanelAction %s failed to load."), *Settings->DebugPanelAction.ToString());
 	}
 }
 
 void AAscensionPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
+
+	ResolveInputAssetsFromSettings();
 
 	UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(InputComponent);
 	if (!EnhancedInput)
@@ -80,20 +115,13 @@ void AAscensionPlayerController::EnterMeditation()
 		}
 	}
 
-	MeditationState = EMeditationState::Entering;
-	AnchorPawn = GetPawn();
-
-	// Context swap (charter 8): IMC_Cultivation is active only in meditation.
-	SetMappingContextActive(IMC_World, false);
-	SetMappingContextActive(IMC_Cultivation, true);
-
-	// TODO(M1): spawn CultivationPawnClass at the Anchor, play the push-in transition (camera into the chest, Dantian glow,
-	// aura expanding from the body; charter 10.2, under two seconds), possess it, set the Anchor's seated pose (10.4) and
-	// swap the World HUD for the Cultivation HUD (10.6). The state is set to Meditating here because there is no transition yet.
-	MeditationState = EMeditationState::Meditating;
-
-	PushControllerEvent(AscensionTags::Event_EnterMeditation, LOCTEXT("EnterMeditation", "Entered meditation."));
-	UE_LOG(LogAscension, Log, TEXT("AAscensionPlayerController::EnterMeditation: IMC_Cultivation active; pawn swap not yet implemented (M1)."));
+	// TODO(M1): the whole transition, in this order: MeditationState = Entering; AnchorPawn = GetPawn(); remove IMC_World and
+	// add IMC_Cultivation (charter 8: IMC_Cultivation is active only in meditation); spawn CultivationPawnClass at the Anchor;
+	// play the push-in (camera into the chest, Dantian glow, aura expanding from the body; charter 10.2, under two seconds);
+	// possess it; set the Anchor's seated pose (10.4); swap the World HUD for the Cultivation HUD (10.6); MeditationState =
+	// Meditating; PushControllerEvent(Event_EnterMeditation, ...). Nothing is swapped at Milestone 0: with no cultivation pawn
+	// to possess, a context swap alone would strand the player without IA_ExitMeditation (bound on ACultivationPawn).
+	UE_LOG(LogAscension, Log, TEXT("AAscensionPlayerController::EnterMeditation: not yet implemented (M1); the body is still and may meditate, state stays InWorld."));
 }
 
 void AAscensionPlayerController::ExitMeditation()
@@ -105,19 +133,10 @@ void AAscensionPlayerController::ExitMeditation()
 	}
 
 	// TODO(M3): refuse while a Tribulation is in its Trial phase (charter 7.13, 8 "blocked during Tribulation Trial").
-	// TODO(M1): cancel a Pulse in progress (charter 7.13 "Exiting mid-Pulse cancels it") before the pawn swap.
-
-	MeditationState = EMeditationState::Exiting;
-
-	SetMappingContextActive(IMC_Cultivation, false);
-	SetMappingContextActive(IMC_World, true);
-
-	// TODO(M1): play the reverse transition, re-possess AnchorPawn, destroy CultivationPawn, restore the World HUD, autosave (charter 10.7).
-	CultivationPawn = nullptr;
-	MeditationState = EMeditationState::InWorld;
-
-	PushControllerEvent(AscensionTags::Event_ExitMeditation, LOCTEXT("ExitMeditation", "Returned to the body."));
-	UE_LOG(LogAscension, Log, TEXT("AAscensionPlayerController::ExitMeditation: IMC_World active; pawn swap not yet implemented (M1)."));
+	// TODO(M1): cancel a Pulse in progress (charter 7.13 "Exiting mid-Pulse cancels it"); MeditationState = Exiting; remove
+	// IMC_Cultivation and add IMC_World; play the reverse transition; re-possess AnchorPawn; destroy CultivationPawn; restore
+	// the World HUD; autosave (charter 10.7); MeditationState = InWorld; PushControllerEvent(Event_ExitMeditation, ...).
+	UE_LOG(LogAscension, Log, TEXT("AAscensionPlayerController::ExitMeditation: not yet implemented (M1)."));
 }
 
 bool AAscensionPlayerController::SetMappingContextActive(UInputMappingContext* Context, bool bActive)

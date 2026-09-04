@@ -16,7 +16,10 @@ after any failure. The script NEVER deletes anything. Every step is wrapped in t
 could not do is printed as a "MANUAL STEP" line and collected into the summary at the end.
 
 Run it once from the Unreal Editor (5.8, Python Editor Script Plugin enabled):
-    Output Log  ->  switch the command line to "Python"  ->  py Content/Python/ascension_m0_setup.py
+    Output Log  ->  switch the command line to "Python"  ->  py ascension_m0_setup.py
+The bare filename resolves because the plugin puts <Project>/Content/Python on sys.path. A path relative to the
+project folder does NOT resolve (the editor's working directory is Engine/Binaries/Win64); if the bare name fails,
+use the absolute path:  py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"
 or from the Python console:
     exec(open(r"<project>/Content/Python/ascension_m0_setup.py").read())
 """
@@ -39,8 +42,8 @@ LADDER_TABLE_NAME = "DT_RealmLadder"
 LADDER_JSON_RELATIVE = os.path.join("Ascension", "Data", "DT_RealmLadder.json")  # under Content/
 EXPECTED_ROWS = 81  # charter 6.1
 
-# Charter Section 8. (name, value type name). Every action here is a button; template locomotion (IA_Move/IA_Look/
-# IA_Jump) stays on the template's own assets ("template, unchanged") and is wired in Milestone 1.
+# Charter Section 8. (name, value type name). Every action here is a button. IA_Move/IA_Look/IA_Jump are created under
+# /Game/Ascension/Input and mapped in IMC_World in Milestone 1 (Appendix C: the template's /Game/Input is unused).
 INPUT_ACTIONS = [
     ("IA_Circulate_CW", "BOOLEAN"),
     ("IA_Circulate_CCW", "BOOLEAN"),
@@ -187,12 +190,17 @@ def ensure_directory(path):
         R.warn("Could not ensure folder {}: {} (create_asset will create it on demand)".format(path, exc))
 
 
-def python_class(name):
-    """unreal.<name>, or None (logged) when the C++ class is not compiled into this editor."""
+def python_class(name, hint=None):
+    """unreal.<name>, or None (logged) when the class is not exposed in this editor.
+
+    The default hint covers this project's own C++ classes (they must be compiled first); pass a hint for engine or
+    plugin classes, where the cause is a disabled plugin or an unloaded editor module, not a build.
+    """
     cls = getattr(unreal, name, None)
     if cls is None:
-        R.manual_step("unreal.{} is not available. Build the AscensionEditor target (C++ classes must be compiled "
-                      "before this step) and re-run the script.".format(name))
+        if hint is None:
+            hint = "Build the AscensionEditor target (C++ classes must be compiled before this step)"
+        R.manual_step("unreal.{} is not available. {} and re-run the script.".format(name, hint))
     return cls
 
 
@@ -226,7 +234,9 @@ def make_key(key_name):
 
 
 def ladder_json_path():
-    content_dir = unreal.Paths.project_content_dir()
+    # project_content_dir() may be engine-relative ("../../../Ascension/Content/"); make it absolute before joining so
+    # the result does not depend on Python's current working directory.
+    content_dir = unreal.Paths.convert_relative_path_to_full(unreal.Paths.project_content_dir())
     return os.path.normpath(os.path.join(content_dir, LADDER_JSON_RELATIVE))
 
 
@@ -317,7 +327,7 @@ def step_ladder_table():
 
 @guarded("3. Input actions")
 def step_input_actions():
-    ia_cls = python_class("InputAction")
+    ia_cls = python_class("InputAction", hint="Enable the Enhanced Input plugin (Edit > Plugins)")
     if ia_cls is None:
         return {}
     ensure_directory(INPUT_PATH)
@@ -335,31 +345,37 @@ def step_input_actions():
             actions[name] = load_asset(path)
             continue
 
-        asset = None
-        if factory_cls is not None:
-            try:
-                asset = create_asset(name, INPUT_PATH, ia_cls, factory_cls())
-            except Exception as exc:  # noqa: BLE001
-                R.warn("InputActionFactory failed for {} ({}); retrying without a factory.".format(name, exc))
-        if asset is None:
-            asset = create_asset(name, INPUT_PATH, ia_cls, None)
-
+        # Per-action guard: one failing asset must not abort the remaining actions (they would all become MANUAL STEPs in step 4).
         try:
-            value_type = getattr(unreal.InputActionValueType, value_type_name)
-            asset.set_editor_property("value_type", value_type)
-        except Exception as exc:  # noqa: BLE001
-            R.manual_step("Set {} Value Type to {} in the asset editor: {}".format(path, value_type_name, exc))
+            asset = None
+            if factory_cls is not None:
+                try:
+                    asset = create_asset(name, INPUT_PATH, ia_cls, factory_cls())
+                except Exception as exc:  # noqa: BLE001
+                    R.warn("InputActionFactory failed for {} ({}); retrying without a factory.".format(name, exc))
+            if asset is None:
+                asset = create_asset(name, INPUT_PATH, ia_cls, None)
 
-        save_asset(path)
-        actions[name] = asset
-        R.created.append(path)
+            try:
+                value_type = getattr(unreal.InputActionValueType, value_type_name)
+                asset.set_editor_property("value_type", value_type)
+            except Exception as exc:  # noqa: BLE001
+                R.manual_step("Set {} Value Type to {} in the asset editor: {}".format(path, value_type_name, exc))
+
+            save_asset(path)
+            actions[name] = asset
+            R.created.append(path)
+        except Exception as exc:  # noqa: BLE001
+            R.failed.append("{}: {}".format(path, exc))
+            R.manual_step("Create Input Action {} by hand under {} (Value Type Digital/bool): {}".format(name, INPUT_PATH, exc))
+            continue
     R.log("{} input actions present.".format(len(actions)))
     return actions
 
 
 @guarded("4. Input mapping contexts")
 def step_mapping_contexts(actions):
-    imc_cls = python_class("InputMappingContext")
+    imc_cls = python_class("InputMappingContext", hint="Enable the Enhanced Input plugin (Edit > Plugins)")
     if imc_cls is None:
         return
     factory_cls = getattr(unreal, "InputMappingContextFactory", None)
@@ -368,55 +384,63 @@ def step_mapping_contexts(actions):
 
     for imc_name, bindings in IMC_BINDINGS.items():
         path = "{}/{}".format(INPUT_PATH, imc_name)
-        if asset_exists(path):
-            R.existed.append(path)
-            imc = load_asset(path)
-        else:
-            imc = None
-            if factory_cls is not None:
-                try:
-                    imc = create_asset(imc_name, INPUT_PATH, imc_cls, factory_cls())
-                except Exception as exc:  # noqa: BLE001
-                    R.warn("InputMappingContextFactory failed for {} ({}); retrying without a factory.".format(imc_name, exc))
-            if imc is None:
-                imc = create_asset(imc_name, INPUT_PATH, imc_cls, None)
-            R.created.append(path)
-
-        # Existing (action name, key name) pairs, so re-runs never duplicate a mapping.
-        existing = set()
+        # Per-context guard: a failure in one context must not skip the other.
         try:
-            for mapping in imc.get_editor_property("mappings"):
-                action = mapping.get_editor_property("action")
-                key = mapping.get_editor_property("key")
-                action_name = action.get_name() if action else ""
-                key_name = str(key.get_editor_property("key_name")) if key else ""
-                existing.add((action_name, key_name))
-        except Exception as exc:  # noqa: BLE001
-            R.warn("Could not read existing mappings of {}: {} (duplicates possible on re-run; check by hand).".format(path, exc))
+            if asset_exists(path):
+                R.existed.append(path)
+                imc = load_asset(path)
+            else:
+                imc = None
+                if factory_cls is not None:
+                    try:
+                        imc = create_asset(imc_name, INPUT_PATH, imc_cls, factory_cls())
+                    except Exception as exc:  # noqa: BLE001
+                        R.warn("InputMappingContextFactory failed for {} ({}); retrying without a factory.".format(imc_name, exc))
+                if imc is None:
+                    imc = create_asset(imc_name, INPUT_PATH, imc_cls, None)
+                R.created.append(path)
 
-        added = 0
-        for action_name, key_name in bindings:
-            if (action_name, key_name) in existing:
-                continue
-            action = actions.get(action_name) or load_asset("{}/{}".format(INPUT_PATH, action_name))
-            if action is None:
-                R.manual_step("Map {} -> {} in {} (the action asset is missing).".format(key_name, action_name, path))
-                continue
+            # Existing (action name, key name) pairs, so re-runs never duplicate a mapping.
+            existing = set()
             try:
-                imc.map_key(action, make_key(key_name))
-                added += 1
+                for mapping in imc.get_editor_property("mappings"):
+                    action = mapping.get_editor_property("action")
+                    key = mapping.get_editor_property("key")
+                    action_name = action.get_name() if action else ""
+                    key_name = str(key.get_editor_property("key_name")) if key else ""
+                    existing.add((action_name, key_name))
             except Exception as exc:  # noqa: BLE001
-                R.manual_step("Map key {} to {} in {} in the asset editor: {}".format(key_name, action_name, path, exc))
+                R.warn("Could not read existing mappings of {}: {} (duplicates possible on re-run; check by hand).".format(path, exc))
 
-        save_asset(path)
-        R.log("{}: {} mappings added, {} already present.".format(path, added, len(existing)))
+            added = 0
+            for action_name, key_name in bindings:
+                if (action_name, key_name) in existing:
+                    continue
+                action = actions.get(action_name) or load_asset("{}/{}".format(INPUT_PATH, action_name))
+                if action is None:
+                    R.manual_step("Map {} -> {} in {} (the action asset is missing).".format(key_name, action_name, path))
+                    continue
+                try:
+                    imc.map_key(action, make_key(key_name))
+                    added += 1
+                except Exception as exc:  # noqa: BLE001
+                    R.manual_step("Map key {} to {} in {} in the asset editor: {}".format(key_name, action_name, path, exc))
+
+            save_asset(path)
+            R.log("{}: {} mappings added, {} already present.".format(path, added, len(existing)))
+        except Exception as exc:  # noqa: BLE001
+            R.failed.append("{}: {}".format(path, exc))
+            R.manual_step("Create {} by hand under {} and add its charter Section 8 mappings (see IMC_BINDINGS at the top of this script): {}".format(
+                imc_name, INPUT_PATH, exc))
+            continue
 
 
 @guarded("5. Widget Blueprints")
 def step_widget_blueprints():
     ensure_directory(UI_PATH)
-    factory_cls = python_class("WidgetBlueprintFactory")
-    wb_cls = python_class("WidgetBlueprint")
+    umg_hint = "The UMG editor module is not loaded in this editor (check that UMG / UMGEditor are enabled)"
+    factory_cls = python_class("WidgetBlueprintFactory", hint=umg_hint)
+    wb_cls = python_class("WidgetBlueprint", hint=umg_hint)
     if factory_cls is None or wb_cls is None:
         return
 
@@ -479,7 +503,7 @@ def _all_level_actors():
 
 
 def _spawn(actor_class, location, rotation=None):
-    rotation = rotation or unreal.Rotator(0.0, 0.0, 0.0)
+    rotation = rotation or unreal.Rotator(roll=0.0, pitch=0.0, yaw=0.0)
     subsystem = _actor_subsystem()
     if subsystem is not None:
         return subsystem.spawn_actor_from_class(actor_class, location, rotation)
@@ -535,7 +559,8 @@ def step_test_level():
         actor.set_actor_scale3d(unreal.Vector(40.0, 40.0, 1.0))  # a 40 m square; Reach 800 fits with room to spare
 
     def configure_light(actor):
-        actor.set_actor_rotation(unreal.Rotator(-50.0, -30.0, 0.0), False)
+        # Keyword arguments: unreal.Rotator's positional order is (roll, pitch, yaw), not (pitch, yaw, roll).
+        actor.set_actor_rotation(unreal.Rotator(roll=0.0, pitch=-50.0, yaw=-30.0), False)
         component = actor.get_editor_property("light_component")
         component.set_intensity(3.0)
 
@@ -585,20 +610,23 @@ def step_settings(config, table):
         except Exception as exc:  # noqa: BLE001
             R.manual_step("Project Settings > Game > Ascension: set {} to {} ({})".format(prop, asset.get_path_name(), exc))
 
-    for prop, expected in (("debug_overlay_class", "WBP_DebugOverlay"), ("debug_panel_class", "WBP_DebugPanel")):
+    for prop, expected in (("debug_overlay_class", "/Game/Ascension/UI/WBP_DebugOverlay.WBP_DebugOverlay_C"),
+                           ("debug_panel_class", "/Game/Ascension/UI/WBP_DebugPanel.WBP_DebugPanel_C"),
+                           ("world_mapping_context", "{}/IMC_World.IMC_World".format(INPUT_PATH)),
+                           ("cultivation_mapping_context", "{}/IMC_Cultivation.IMC_Cultivation".format(INPUT_PATH)),
+                           ("debug_overlay_action", "{}/IA_DebugOverlay.IA_DebugOverlay".format(INPUT_PATH)),
+                           ("debug_panel_action", "{}/IA_DebugPanel.IA_DebugPanel".format(INPUT_PATH))):
         try:
             R.log("AscensionSettings.{} = {}".format(prop, settings.get_editor_property(prop)))
         except Exception as exc:  # noqa: BLE001
             R.warn("Could not read AscensionSettings.{}: {}".format(prop, exc))
-        R.log("  (expected /Game/Ascension/UI/{0}.{0}_C, as written in Config/DefaultGame.ini)".format(expected))
+        R.log("  (expected {}, as written in Config/DefaultGame.ini; D-0010, D-0021)".format(expected))
 
     if changed:
-        try:
-            settings.save_config()
-            R.log("AscensionSettings saved to Config/DefaultGame.ini.")
-        except Exception as exc:  # noqa: BLE001
-            R.manual_step("Config/DefaultGame.ini already carries the [/Script/Ascension.AscensionSettings] values; "
-                          "confirm them in Project Settings > Game > Ascension and press Set as Default ({})".format(exc))
+        # UObject::SaveConfig is not exposed to Python; the CDO change lives in memory for this session only, which is
+        # harmless because Config/DefaultGame.ini already carries the same values (D-0010).
+        R.log("AscensionSettings CDO updated in memory; Config/DefaultGame.ini already carries the same values (D-0010). "
+              "Confirm in Project Settings > Game > Ascension.")
     else:
         R.log("AscensionSettings already point at the ladder assets (Config/DefaultGame.ini); nothing changed.")
 

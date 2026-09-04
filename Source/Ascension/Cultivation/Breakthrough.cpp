@@ -86,7 +86,7 @@ float UBreakthroughLibrary::ComputePurityFactor(float Purity, bool bPurityActive
 float UBreakthroughLibrary::ComputeMinorChance(float Base, float Stability, float Purity, float MantraFactor, bool bPurityActive)
 {
 	const float Chance = Base * ComputeStabilityFactor(Stability) * ComputePurityFactor(Purity, bPurityActive) * MantraFactor;
-	// A probability: clamped so a generous Mantra factor cannot exceed certainty (see DECISIONS: chance clamp).
+	// A probability: clamped so a generous Mantra factor cannot exceed certainty (D-0023).
 	return FMath::Clamp(Chance, 0.0f, 1.0f);
 }
 

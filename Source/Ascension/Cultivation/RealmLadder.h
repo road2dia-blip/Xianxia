@@ -319,7 +319,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Ascension|Ladder")
 	static FName MakeRowName(int32 Realm, int32 Layer);
 
-	/** Early (1-3), Middle (4-6), Late (7-8), Peak (9) (charter 6.1). */
+	/**
+	 * Early (1-3), Middle (4-6), Late (7-9; charter 6.1) as one value per Layer: Layer 9 returns Peak (the charter's
+	 * "also called Peak"; D-0025). Publishers of State.Layer.* must add both Layer.Late and Layer.Peak for Layer 9 (use IsPeak).
+	 */
 	UFUNCTION(BlueprintPure, Category = "Ascension|Ladder")
 	static ERealmStage GetStage(int32 Layer);
 

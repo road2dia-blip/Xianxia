@@ -21,9 +21,15 @@ class ACultivationPawn;
  * (charter 10.2), and the F1 debug overlay / F2 debug panel widgets (charter 10.6, 11.5) created from the classes in
  * UAscensionSettings.
  *
- * Milestone 0 implements the plumbing that is pure data flow: adding IMC_World at BeginPlay, swapping the contexts on
- * EnterMeditation/ExitMeditation, and creating/toggling the debug widgets. The pawn swap, the camera push-in
- * transition and the HUD swap are Milestone 1 (TODO(M1) in the bodies).
+ * Milestone 0 implements the plumbing that is pure data flow: adding IMC_World at BeginPlay and creating/toggling the
+ * debug widgets. EnterMeditation/ExitMeditation are log-only stubs: the context swap, the pawn swap, the camera
+ * push-in transition and the HUD swap all arrive together in Milestone 1 (TODO(M1) in the bodies), because swapping
+ * contexts without possessing an ACultivationPawn would leave the player with no controls and no way back.
+ *
+ * The four input properties (IMC_World, IMC_Cultivation, IA_DebugOverlay, IA_DebugPanel) are normally assigned on a
+ * Blueprint subclass (BP_AscensionPlayerController, Milestone 1). At Milestone 0 the raw C++ class is the game mode's
+ * controller, so any property left unassigned is filled from the UAscensionSettings soft references
+ * (Config/DefaultGame.ini; D-0021) before use. This is what makes F1/F2 reachable in PIE on L_Test_Cultivation.
  *
  * The debug toggles are bound on the controller's own input component so they work in both contexts (as long as the
  * IMC maps IA_DebugOverlay/IA_DebugPanel); ACultivationPawn only binds its own copies when IsDebugInputBound() is
@@ -39,11 +45,11 @@ public:
 
 	// -- Meditation (charter 7.13, 10.2) --------------------------------------------------------------------------------
 
-	/** IA_EnterMeditation: swap IMC_World -> IMC_Cultivation and (M1) possess the cultivation pawn with the transition. */
+	/** IA_EnterMeditation. Milestone 0: checks the stationary gate and logs. M1: swap IMC_World -> IMC_Cultivation and possess the cultivation pawn with the transition. */
 	UFUNCTION(BlueprintCallable, Category = "Ascension|Meditation")
 	void EnterMeditation();
 
-	/** IA_ExitMeditation: swap IMC_Cultivation -> IMC_World and (M1) return to the Anchor body. Blocked during a Tribulation Trial (M3). */
+	/** IA_ExitMeditation. Milestone 0: logs. M1: swap IMC_Cultivation -> IMC_World and return to the Anchor body. Blocked during a Tribulation Trial (M3). */
 	UFUNCTION(BlueprintCallable, Category = "Ascension|Meditation")
 	void ExitMeditation();
 
@@ -122,6 +128,12 @@ protected:
 	TObjectPtr<UUserWidget> DebugPanelWidget;
 
 private:
+	/**
+	 * Fill any unassigned input property from the UAscensionSettings soft references (D-0021). Idempotent; called from
+	 * SetupInputComponent and BeginPlay because the engine calls them in that order and each needs its own assets.
+	 */
+	void ResolveInputAssetsFromSettings();
+
 	/** Add/remove a mapping context on the local player's Enhanced Input subsystem; logs and returns false when unavailable. */
 	bool SetMappingContextActive(UInputMappingContext* Context, bool bActive);
 

@@ -125,7 +125,7 @@ int32 UAutoCultivationController::ApplyDefaultsToStack(UModifierStack* Stack) co
 		return 0;
 	}
 
-	// Only the five Auto values with canonical names go through the stack; the two Breakthrough gates stay here (see DECISIONS).
+	// Only the five Auto values with canonical names go through the stack; the two Breakthrough gates stay here (D-0024).
 	struct FAutoDefault
 	{
 		FName Name;

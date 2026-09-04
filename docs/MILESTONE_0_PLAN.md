@@ -3,7 +3,7 @@
 Charter: `docs/ASCENSION_CHARTER.md`. Decisions referenced as `D-NNNN` are in `docs/DECISIONS.md`.
 
 ## 1. Template
-**Unreal Third Person template** (D-0002). The charter requires the template mannequins, template locomotion, and a seated pose derived from template animations (Sections 8, 10.1, 10.4). Blank would rebuild those for no gain. All of our assets live under `/Game/Ascension/`; the template's `/Game/Characters` is used read-only.
+**Unreal Third Person template shape** (D-0002); the template's binary content is imported by the owner (OWNER_FIRST_RUN §1) because this container has no engine to generate it. The charter requires the template mannequins, template locomotion, and a seated pose derived from template animations (Sections 8, 10.1, 10.4). Blank would rebuild those for no gain. All of our assets live under `/Game/Ascension/`; the template's `/Game/Characters` is used read-only.
 
 ## 2. Engine version and plugins
 - **Unreal Engine 5.8** (`EngineAssociation: "5.8"` in `Ascension.uproject`).
@@ -53,7 +53,7 @@ Source/
 Content/
   Python/ascension_m0_setup.py
   Ascension/  Data/ (ladder config, DT_RealmLadder.csv/.json, QiPresets/, Mantras/, Daos/, Tribulations/)
-              Blueprints/  Materials/  FX/  Audio/  UI/  Maps/  Animation/
+              Blueprints/  Materials/  FX/  Audio/  UI/  Maps/  Animation/  Input/ (IA_/IMC_ assets, D-0027)
 Tools/  Ladder/generate_realm_ladder.py   StubCompile/ (model test)
 docs/   ASCENSION_CHARTER.md  KICKOFF.md  CHANGELOG.md  DECISIONS.md  SKELETON_M0.md  MILESTONE_0_PLAN.md  MILESTONE_0_REPORT.md  OWNER_FIRST_RUN.md  evidence/
 ```
