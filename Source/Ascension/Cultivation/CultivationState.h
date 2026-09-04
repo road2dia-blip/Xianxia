@@ -128,9 +128,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ascension|State")
 	bool LoadRowFromTable(const UDataTable* Table);
 
-	/** The current ladder row (charter 6.6 "reads the row"). */
-	UFUNCTION(BlueprintPure, Category = "Ascension|State")
+	/** The current ladder row (charter 6.6 "reads the row"). Native accessor; UFUNCTIONs cannot return references. */
 	const FRealmLayerRow& GetRow() const { return CurrentRow; }
+
+	/** Blueprint face of GetRow (a copy). */
+	UFUNCTION(BlueprintPure, Category = "Ascension|State", meta = (DisplayName = "Get Row"))
+	FRealmLayerRow GetRowCopy() const { return CurrentRow; }
 
 	/** True when any Realm at or below the current one lists the system tag in UnlockedSystems (charter 11.2). Needs SetLadderConfig. */
 	UFUNCTION(BlueprintPure, Category = "Ascension|State")
@@ -159,7 +162,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ascension|State")
 	void SetLadderConfig(const UDA_RealmLadderConfig* InConfig);
 
-	UFUNCTION(BlueprintPure, Category = "Ascension|State")
+	/** Native accessor for the config set by SetLadderConfig (const pointer; not Blueprint-exposed). */
 	const UDA_RealmLadderConfig* GetLadderConfig() const { return LadderConfig; }
 
 	/** The stage grouping of the current Layer (charter 6.1). */

@@ -23,7 +23,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBacklash);
  * density layers (7.9), and accumulates FlowPhase for the field visuals. Exposes its numbers so M_AuraField,
  * Niagara and the HUD read them (charter 11.1 "exposes parameters for visuals").
  *
- * Input contract (charter 7.11, 14.2 rule 5): the public Set*/Begin*/Release* entry points are the ONLY way the
+ * Input contract (charter 7.11, 14.2 rule 5): the public Set-, Begin- and Release- entry points are the ONLY way the
  * aura's state changes from outside. The cultivation pawn, UAutoCultivationController and the scripted determinism
  * sequence all call the same functions, so Auto mode and tests are indistinguishable from a player.
  *

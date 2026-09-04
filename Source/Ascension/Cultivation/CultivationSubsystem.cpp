@@ -118,11 +118,8 @@ void UCultivationSubsystem::ResetNewGame()
 	State->RngPosition = 0;
 	State->EventLog.Reset();
 
-	if (Stack)
-	{
-		// TODO(M2): Mantra/Dao/scar modifiers are pushed by their owners; a new game starts with none.
-		Stack->RemoveModifiersFromSource(NAME_None);
-	}
+	// TODO(M2): Mantra/Dao/scar modifiers are pushed and removed by their owners (RemoveModifiersFromSource by id);
+	// at Milestone 0 nothing pushes any, so a new game starts with an empty modifier list.
 
 	SetRealmLayer(1, 1);
 }
