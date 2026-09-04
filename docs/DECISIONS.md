@@ -148,3 +148,195 @@ Format: `D-NNNN — Title` · Milestone · Charter reference · Decision · Reas
 - **Milestone:** 0 · **Charter:** 10.6 (C++ base widgets, visuals in UMG), 2.1
 - **Decision:** `bAuthorizeAutomaticWidgetVariableCreation=False` in `Config/DefaultEngine.ini`; designers tick "Is Variable" only on the widgets the C++ base binds to.
 - **Reason:** The HUD and debug widgets are driven from C++ properties (`RefreshFrom`, `BuildDebugText`); keeping the Blueprint variable list to the bound widgets makes the read-back lists required by charter 14.2 rule 4 short and meaningful.
+
+## D-0029 — Target.cs uses `BuildSettingsVersion.Latest` and `EngineIncludeOrderVersion.Latest`
+- **Milestone:** 0 · **Charter:** 2 (Unreal Engine 5.8), contract Module layout
+- **Decision:** Both Target.cs files set DefaultBuildSettings = BuildSettingsVersion.Latest and IncludeOrderVersion = EngineIncludeOrderVersion.Latest instead of a pinned enum member (e.g. V5 / Unreal5_6).
+- **Reason:** The exact 5.8 enum member names cannot be confirmed without the engine in this container; Latest exists in every 5.x UBT and resolves to 5.8's values, so the target compiles on the owner's machine. If a future engine upgrade changes build-setting defaults, pin the enums then.
+- **Note:** Config comments originally cited this as D-0021; renumbered here.
+
+## D-0030 — Editor-only plugins carry `TargetAllowList ["Editor"]` in the .uproject
+- **Milestone:** 0 · **Charter:** D-0015 (plugins), 2.2 (packaged builds contain nothing unnecessary)
+- **Decision:** PythonScriptPlugin and EditorScriptingUtilities are enabled with "TargetAllowList": ["Editor"]; EnhancedInput, Niagara, Metasound (the engine's plugin name for MetaSounds) and ControlRig are enabled unconditionally. The Third Person template's ModelingToolsEditorMode plugin is not enabled because D-0015 does not list it.
+- **Reason:** D-0015 calls the two scripting plugins editor-only; the allow-list keeps them out of the packaged Windows game exactly as the plan states. Plugin names follow the engine's .uplugin file names.
+- **Note:** Config comments originally cited this as D-0022; renumbered here.
+
+## D-0031 — Gameplay tag DevComments are one-line charter citations; conflict families name no members yet
+- **Milestone:** 0 · **Charter:** 11.2, Appendix C, 9.1 (ConflictTags), D-0013, D-0014
+- **Decision:** Every DevComment states the tag's mechanical meaning with a charter section reference and, where the charter gates it, the Realm (e.g. Impure: resistance 0.7, drains Stability while Drawn, Rejected below Stability 0.35 (7.5)). Comments are ASCII with no quotes or apostrophes so the ini struct syntax cannot break ("Fire God's Mantra" is written "Fire God Mantra"). Ascension.Mantra.Conflict.{Aggressive,Still,Demonic,Void} are described as families only; which Mantras belong to which family is data on UDA_Mantra.ConflictTags and is decided at Milestone 6, not here. Native variable names follow the contract examples: the tag string minus the Ascension. root with dots replaced by underscores.
+- **Reason:** The tag list is Milestone 0 evidence ("the tag list") and the editor shows DevComments as tooltips; a real meaning per tag makes the list reviewable. Assigning conflict membership now would pull Realm 8 design forward.
+
+## D-0032 — Ladder numeric precision: config constants are `double`, row fields `float`, rounding identical to the Python twin
+- **Milestone:** 0 · **Charter:** 6.3, 6.6; SKELETON_M0 RealmLadder · 6.1, D-0011
+- **Decision:**
+  - *DA_RealmLadderConfig formula constants are double, row fields are float.* Every formula constant on UDA_RealmLadderConfig is a `double` UPROPERTY (same names and defaults as the Python LadderConfig). FRealmLayerRow fields stay `float` per charter 6.6. ComputeRow does all arithmetic in double and casts once when storing.
+  - *In-engine rows are rounded exactly like the Python twin.* URealmLadderLibrary::ComputeRow rounds Reach/Capacity/Reserve/Progress to 2 decimals, StabilityRecovery/ImpureFraction/MinorBreakthroughBaseChance to 4, the Pulse timings and spawn interval to 3, using round-half-to-even (FMath::RoundHalfToEven on the scaled value), before storing. A replica harness reproduced all 81 committed JSON rows with zero differences.
+- **Reason:**
+  - The Python twin computes in IEEE-754 double; a `float` 1.9 (1.89999997...) raised to the 8th power shifts Reach at 9.9 by ~0.02 and the rounded row would differ from the committed JSON. Blueprint exposes double as its float anyway.
+  - DT_RealmLadder is imported from the JSON (D-0011); regenerating in-engine must give the identical table or the two paths would silently disagree.
+
+## D-0033 — `ComputeRow` applies the per-Realm `Overrides` itself; override keys are row field names
+- **Milestone:** 0 · **Charter:** 6.1 ('plus per-Realm override rows'), 6.6 Overrides
+- **Decision:** ComputeRow = formula + rounding + the Realm's `Overrides` by property name; GenerateLadderRows is a loop over ComputeRow. Accepted keys are the FRealmLayerRow field names (AuraReach, DantianCapacity, QiReserveMax, ProgressRequired, StabilityRecovery, MaxCirculationStrength, PulseChargeDuration, PulseRecoveryDuration, AmbientWispCount (rounded to int), AmbientSpawnInterval, ImpureFraction, MinorBreakthroughBaseChance) plus `NatureWeights.<Nature>`; unknown names log a warning and are ignored. ApplyOverride is exposed as a BlueprintCallable helper.
+- **Reason:** A row computed anywhere (commandlet, editor library, a runtime fallback) must be the final row; splitting the override step across callers invites drift. Realm/Layer are clamped to 1..9.
+
+## D-0034 — `NatureWeights` keys are the nature tag leaf names
+- **Milestone:** 0 · **Charter:** 6.3 NatureWeights, D-0006, 11.2
+- **Decision:** ComputeRow walks Realms[0..Realm-1].UnlockedQiNatures in order and keys NatureWeights by the tag's leaf name ("Ascension.Qi.Nature.Fire" -> "Fire"). Generic is recognised by exact match against Ascension.Qi.Nature.Generic (falling back to the leaf name if the tag is unregistered) and gets GenericNatureWeight; every other nature gets UnlockedNatureWeight.
+- **Reason:** Matches the committed JSON keys and the Python dict order (Generic, Yin, Yang, Fire, Water, Wood, Metal, Earth, Life, Void) while keeping the Realm definition's unlock lists as tag containers per 11.2.
+
+## D-0035 — Per-Realm `UnlockedSystems` assignment
+- **Milestone:** 0 · **Charter:** 6.2 'New system unlocked', 8 (legend growth), 11.2
+- **Decision:** Realm 1: Circulation, Pulse, Stability, BasicMantra, Breakthrough, Tribulation, AutoCultivation, DebugOverlay. Realm 2: Purity, RefinementPulse, DantianCapacity, DaoUnlock, Techniques. Realm 3: DensityLayers, SecondMantraChoice, DaoInsight, AnchorDrift. Realm 4: Core, CirculationMomentum, Keystone. Realm 5: SplitCirculation, AutoFullEfficiency, ThirdMantraChoice, LayerModifier. Realm 6: CorruptedQi, DevouringMantra, DaoExpression. Realm 7: Domain, RealmWaveLayers. Realm 8: DualMantra, SecondKeystone, DaoResonance. Realm 9: AscensionPulse, FinalDaoNodes, Endgame. Conditions: Pure+Impure at 1, Corrupted at 6, Refined at 8. Natures per D-0006.
+- **Reason:** Table 6.2 names the systems per Realm; the cross-cutting tags (Breakthrough, Tribulation, AutoCultivation, DebugOverlay) are needed from the first Realm (6.4, 7.11, 10.6, Milestone 1 scope); Techniques arrive with the first Dao (Realm 2, Milestone 3); LayerModifier appears in the legend at Realm 5 (Section 8).
+
+## D-0036 — `DaoNodeDepthUnlocked = Realm − 1` (placeholder until the trees exist)
+- **Milestone:** 0 · **Charter:** 6.6, 9.3
+- **Decision:** Realm 1 unlocks depth 0 (no Dao yet), Realm 2 depth 1, ..., Realm 9 depth 8.
+- **Reason:** The charter gates depth per Realm but gives no numbers and the trees are not designed until Milestone 3. A monotone one-per-Realm placeholder keeps the first Dao at Realm 2, Keystones reachable at Realm 4 and the final nodes at Realm 9; to be replaced when the trees exist.
+
+## D-0037 — `DescribeFailure` precedence and thresholds
+- **Milestone:** 0 · **Charter:** 6.4 message shapes, 7.7 (below 0.5), 7.8 (below 0.6)
+- **Decision:** If Stability < 0.5: 'Breakthrough failed - Stability {S} was below 0.50'. Else if Purity is active and < 0.6: 'Breakthrough failed - Purity {P} - Impure Qi resisted condensation'. Else a neutral line that still shows the numbers: 'Breakthrough failed - the Dantian did not condense (Stability {S}, Purity {P})' (Purity omitted before Realm 2). Numbers are formatted to two decimals; the dash is U+2014 written as a — escape. The 7.10 factor constants and these thresholds are named constexprs in namespace BreakthroughFormula.
+- **Reason:** Stability is the stronger factor and the one the low-attention player trips; the neutral line keeps every failure attributable (charter 5.7). The constants are the formula's definition, not runtime tunables, so they are named rather than read from the stack.
+
+## D-0038 — Seeded Breakthrough stream: lazy resynchronisation from Seed/Position; a new game seeds with `FMath::Rand` and stores it
+- **Milestone:** 0 · **Charter:** 7.10, 10.7, 11.3 · 7.10 (seeded stream stored in the save), 10.7 (new game state)
+- **Decision:**
+  - *FSeededStream resynchronises lazily from Seed/Position.* Seed and Position are the persisted truth. The wrapped FRandomStream is re-initialised from Seed and advanced by replaying Position draws whenever those fields differ from what the stream has produced (Restore(), or fields set through reflection by a load or the debug panel). NextFloat/NextInt/NextRange each consume exactly one draw so Position is a plain draw count. Blueprint faces: UBreakthroughLibrary::SeededStreamNextFloat/SeededStreamRestore.
+  - *New game seeds the Breakthrough stream with FMath::Rand and stores it.* ResetNewGame sets RngSeed = FMath::Rand(), RngPosition = 0; the seed is then persisted by ApplyToSave so reloading never rerolls. The scripted determinism sequence (M1) sets its own seed through the same fields.
+- **Reason:**
+  - Save/load writes the two ints back through reflection; a stream that notices and replays is the smallest way to guarantee 'reloading does not reroll' without a hook in the save code.
+  - The charter fixes that rolls are seeded and saved, not where the first seed comes from; a random initial seed keeps distinct playthroughs distinct while the saved seed keeps each one deterministic.
+
+## D-0039 — `UModifierStack` cache is a non-reflected mutable member; unknown properties resolve to 0
+- **Milestone:** 0 · **Charter:** 9.1, 11.1, SKELETON_M0 ModifierStack
+- **Decision:** Get() is const, so Cache and bCacheDirty are `mutable` non-UPROPERTY members rebuilt lazily. A property with no base and no modifier resolves from 0 with a Verbose log (not a crash). Resolution order Override (last wins) -> Add (sum) -> Multiply (product); an empty FGameplayTagQuery is unconditional. The 45 canonical names are declared through one X-macro so header, definitions and AscensionProps::AllPropertyNames() cannot drift; DumpToString lists base, every entry (active/inactive under the current tags) and the effective value.
+- **Reason:** UHT does not reflect mutable members and the cache is transient by nature; a loud-but-safe default keeps the debug dump useful when a row field is missing.
+
+## D-0040 — `FlowPhase` wraps into [0,1) turns instead of clamping; Circulation Held freezes it
+- **Milestone:** 0 · **Charter:** 7.1, 7.2, Section 13 (FlowPhase accumulated in code); SKELETON_M0 AuraComponent ("accumulates FlowPhase ... and clamps")
+- **Decision:** UAuraComponent::TickComponent accumulates FlowPhase += CirculationSigned * DeltaTime and wraps the result with Fmod into [0,1) (units: turns) rather than clamping to a bound. Circulation Held freezes the accumulation (PhaseDelta = 0) as charter 7.2 specifies; nothing else is integrated at Milestone 0.
+- **Reason:** A clamp would freeze the field's current at the bound after one turn; the material needs a continuously advancing phase, and a wrapped phase is what the prototype's visual wave consumed. The Held freeze is part of the phase rule itself (7.2 'phase frozen'), not a new system.
+
+## D-0041 — Aura state-machine display precedence
+- **Milestone:** 0 · **Charter:** Section 13 ('Circulation keeps running underneath a Pulse; the state machine has documented display precedence'), 7.11
+- **Decision:** Highest first: Backlash/BacklashRecovery > Breakthrough charging > Pulse phase (Releasing > Overcharging > Charging > Recovering) > Circulation Held > Circulating CW/CCW > Meditating. Lower states stay mechanically active underneath; precedence only chooses the label and dominant audio/visual layer. Auto-cultivating is a label suffix, never a state.
+- **Reason:** The charter requires the precedence to be documented but does not give the order; failure must be readable first (5.7), then the whole-aura compression, then Pulse over circulation (13).
+
+## D-0042 — Event checksum excludes the localisable `FText` message
+- **Milestone:** 0 · **Charter:** 11.3 (determinism checksum), 10.6 (event log)
+- **Decision:** UCultivationState::ComputeEventChecksum renders each event as tag|time(%.4f)|subject|value(%.4f); and CRC32s the string with FCrc::StrCrc32. The localisable Message is excluded.
+- **Reason:** Two runs must match by inputs and seed, not by language; FText can differ across cultures and localisation passes without any gameplay difference.
+
+## D-0043 — Ladder row falls back to the formula when `DT_RealmLadder` is missing
+- **Milestone:** 0 · **Charter:** 6.1 (the table is the ladder), 6.6, D-0008 (no editor in the build container)
+- **Decision:** UCultivationSubsystem::SetRealmLayer loads the row from DT_RealmLadder; if the table is unavailable but DA_RealmLadderConfig is, it computes the row with URealmLadderLibrary::ComputeRow and logs that it did so; with neither, the row keeps its defaults (R1L1 values) and a warning is logged. Initialize tolerates null soft references from UAscensionSettings with LogAscension warnings.
+- **Reason:** Before the owner runs ascension_m0_setup.py neither asset exists; the fallback keeps the subsystem usable in PIE while making the substitution visible in the log (14.2 rule 8: never invent success).
+
+## D-0044 — Auto mode circulates clockwise when the Mantra has no preferred direction
+- **Milestone:** 0 · **Charter:** 7.11 ("builds circulation in the active Mantra's preferred direction"), 9.1 PreferredCirculationDirection (-1, 0, +1)
+- **Decision:** When PreferredCirculationDirection is 0, Auto builds clockwise (the IA_Circulate_CW / Q input). Documented as rule 1 in the UAutoCultivationController header; enforced in Milestone 1.
+- **Reason:** Circulation is never optional for Auto because it feeds the Pulse efficiency bonus (7.2); a direction had to be chosen and clockwise is the first-listed input in charter 8. Before Realm 2 direction is a pure feel choice, so nothing mechanical hangs on it.
+
+## D-0045 — Surge `Type` and `TribulationId` tag families are deferred to Milestone 3
+- **Milestone:** 0 · **Charter:** Appendix A (FSurgeEvent.type), 6.5, SKELETON_M0 tag list (no Ascension.Tribulation.* family)
+- **Decision:** FSurgeEvent::Type and UTribulationDefinition::TribulationId are FGameplayTag fields restricted only to the Ascension root; the concrete tag family (surge kinds: spawn wave, pressure wave, counter-rotation, domain shrink, forced resonance) is added with the first Tribulation subclass in Milestone 3 and must then be logged in DECISIONS and DefaultGameplayTags.ini.
+- **Reason:** The Milestone 0 tag list is a shared contract across writers; inventing a family now with no consumer would be scope pulled forward (charter 12) and could drift from what the Coalescence implementation actually needs.
+
+## D-0046 — Appendix A warning-lead floor is applied on read, not via `PostEditChangeProperty`
+- **Milestone:** 0 · **Charter:** Appendix A ("Warning lead is never below 1.0 s"), 6.5 fairness, Milestone 8 fairness review
+- **Decision:** FSurgeEvent keeps WarningLeadSeconds (default 1.0, ClampMin 1.0 in the editor) and exposes GetWarningLeadClamped() = max(1.0, value) plus static constexpr MinWarningLeadSeconds; every consumer reads the clamped accessor. No PostEditChangeProperty hook on the struct or the definition class.
+- **Reason:** A read-time floor holds for Blueprint-authored, JSON-imported and code-built surge lists alike, needs no editor-only code in the runtime module, and cannot be bypassed by a subclass forgetting to call Super.
+
+## D-0047 — Debug toggles (F1/F2) bind on the player controller; Technique 1–4, Menu (Tab and I), F1 and F2 are mapped in both mapping contexts
+- **Milestone:** 0 · **Charter:** 8, 10.6, 11.5; SKELETON_M0 Player/ (pawn IA_DebugOverlay/IA_DebugPanel) · Charter 8 (Technique and Menu 'Cultivation & World' / 'Both'; F1 in 10.6 and F2 in 11.5 have no context stated)
+- **Decision:**
+  - *Debug toggles (F1/F2) are bound on the player controller; the pawn binds its copies only as a fallback.* AAscensionPlayerController has its own IA_DebugOverlay/IA_DebugPanel UPROPERTYs and binds them in SetupInputComponent, so F1/F2 work in IMC_World and IMC_Cultivation alike. ACultivationPawn keeps the contract's two IA properties and forwarding handlers but binds them only when AAscensionPlayerController::IsDebugInputBound() is false, so one press is never processed twice.
+  - *Technique 1-4, Menu (Tab and I), F1 and F2 are mapped in both IMC_World and IMC_Cultivation.* IMC_Cultivation carries Q, E, LeftShift, LeftControl, B, X, One-Four, M (exit), Tab+I, F1, F2. IMC_World carries M (enter), One-Four, Tab+I, F1, F2. Only the two mapping contexts of the contract are created.
+- **Reason:**
+  - At Milestone 0 the pawn swap is a TODO(M1), so a pawn-only binding would leave the F2 panel unreachable from the possessed world character and the Milestone 0 exit criterion 'Debug panel opens' unverifiable. Controller-level input is the smallest change that keeps the contract's pawn members and makes the panel reachable in both contexts.
+  - The debug overlay must be readable inside meditation and the debug panel must work on L_Test_Cultivation before meditation exists, so both debug toggles belong to both contexts. Charter 8 already puts Technique and Menu in both.
+
+## D-0048 — Control legend key labels are read from the mapping context by input-action asset name
+- **Milestone:** 0 · **Charter:** 8 ('rebindable through data', 'no hardcoded key checks'), 10.6, 11.2
+- **Decision:** UCultivationHUDWidget holds TArray<FControlLegendEntry>{RequiredSystem tag, ActionName (FName of the IA asset, e.g. IA_Pulse), Description} defaulted in the constructor from the charter 8 table, plus a LegendMappingContext (IMC_Cultivation). Each line is listed only when its system tag is unlocked (UCultivationState::IsSystemUnlocked) and its key label is the display name of the first FKey mapped to that action in the context. UWorldHUDWidget builds its 'Press <key> to meditate' prompt the same way from IMC_World. The Breakthrough 'appears only when first available' readiness rule is a TODO(M2).
+- **Reason:** Key names in FText literals would drift from rebinds; no IA asset references can be made in C++ constructors because the assets are created in-editor by the setup script (D-0008). Matching by asset name keeps the legend data-driven with no key literal and no hard reference.
+
+## D-0049 — Auto-cultivation toggle is a request flag on `ACultivationPawn` at Milestone 0
+- **Milestone:** 0 · **Charter:** 7.11; SKELETON_M0 UI/ DebugPanelWidget::ToggleAuto, AutoCultivationController
+- **Decision:** ACultivationPawn::ToggleAutoCultivation() flips bAutoCultivationRequested, pushes an Ascension.Event.AutoToggled event to the state's log and logs; IA_AutoCultivate and UDebugPanelWidget::ToggleAuto both call it. Wiring to UAutoCultivationController::bEnabled/NotifyManualInput is a TODO(M1) in the pawn; every cultivation handler already calls a NoteManualInput() hook for the charter 7.11 take-over rule. The HUD state label carries the '- Auto-cultivating (<Mantra>)' suffix when the flag is set.
+- **Reason:** The contract's pawn member list does not include the Auto controller, and the assignment asked ToggleAuto to act on state at M0. A flag plus an event-log entry is the smallest observable state that M1 can bind to the real controller without changing the entry points.
+
+## D-0050 — Stationary check for entering meditation is a tunable speed threshold on the character
+- **Milestone:** 0 · **Charter:** 8 (IA_EnterMeditation 'must be stationary'); SKELETON_M0 AAscensionCharacter::CanEnterMeditation
+- **Decision:** CanEnterMeditation() returns true when the movement component IsMovingOnGround() and the horizontal speed is at or below StationarySpeedThreshold (EditDefaultsOnly, default 5 cm/s). Refusals are logged at M0; M1 surfaces them as the World HUD prompt ('Stand still to meditate').
+- **Reason:** The charter gives no number. 5 cm/s tolerates the template's braking tail without allowing meditation while walking. It is control feel, not a cultivation number, so it lives on the character rather than in the ladder/ModifierStack.
+
+## D-0051 — Debug panel `SetStability`/`SetPurity` write both the persisted state and the live aura
+- **Milestone:** 0 · **Charter:** 7.7, 7.8, 11.5
+- **Decision:** UDebugPanelWidget::SetStability/SetPurity clamp to 0..1, write UCultivationState::Stability/Purity, and when an ACultivationPawn is possessed also write UAuraComponent::Stability/Purity (broadcasting OnStabilityChanged). UCultivationHUDWidget::RefreshFrom reads the state's copies and lets the aura's live copies win while meditating.
+- **Reason:** The contract keeps Stability/Purity on both objects (state = persisted, aura = runtime); Milestone 1 defines the sync direction. Writing both at M0 makes the panel's effect visible in the field and in the save without pre-empting that design.
+
+## D-0052 — Cultivation camera framing values are `EditDefaultsOnly` presentation properties on the pawn
+- **Milestone:** 0 · **Charter:** 10.2 ('fixed elevated three-quarter, pulling back as Reach grows')
+- **Decision:** ACultivationPawn exposes CameraPitchDegrees (-55), CameraYawDegrees (-30) and CameraBaseArmLength (1600) as EditDefaultsOnly; the spring arm ignores control rotation and collision. Reach-driven pull-back is a TODO(M1).
+- **Reason:** Presentation values belong on the Blueprint per charter 11.1 (Blueprint for visuals and anything a designer will tune); they are not gameplay numbers and do not pass through the ModifierStack.
+
+## D-0053 — Mantra and Technique display names fall back to tag leaves until the assets exist
+- **Milestone:** 0 · **Charter:** 9.1, 10.6; SKELETON_M0 UI/ CultivationHUDWidget
+- **Decision:** UCultivationHUDWidget::MantraName is '<tag leaf> Mantra' (e.g. 'Basic Mantra') from UCultivationState::ActiveMantra and TechniqueSlots show the technique tag name; TODO(M3) replaces both with UDA_Mantra::DisplayName / UDaoTechnique::DisplayName.
+- **Reason:** No Mantra or Dao assets exist at Milestone 0 and the HUD must not hard-code names; the tag leaf is the only data available now.
+
+## D-0054 — Ladder asset safety rules: the commandlet never creates the config; a table of another row struct is never overwritten; the setup script refills only when the table does not hold exactly 81 rows
+- **Milestone:** 0 · **Charter:** Contract 'Source/AscensionEditor/' (commandlet 'loads or creates the table'); charter 13 rule 10 · Charter 14.2 rule 2 (check before create); Python rule 'never delete' · Charter 14.2 rule 2; contract 'Content/Python/ascension_m0_setup.py' (idempotent, never delete)
+- **Decision:**
+  - *The ladder commandlet never creates DA_RealmLadderConfig.* URealmLadderCommandlet loads the config asset and fails with exit code 1 and an explicit message ('run Content/Python/ascension_m0_setup.py first, or pass -Config=') when it is missing. Only DT_RealmLadder is created on demand (new package, RowStruct = FRealmLayerRow, registered with the asset registry).
+  - *A table of another row struct is never overwritten.* FillTable adopts FRealmLayerRow only on a never-typed empty table; if the table's RowStruct is anything else it logs an error and returns -1 without touching the rows.
+  - *Setup script refills DT_RealmLadder only when it does not hold exactly 81 rows.* If the table already has 81 rows the script leaves it alone; if it has 0 or any other count it fills from DT_RealmLadder.json (logging a warning when replacing a partial set). Assets, mappings, widgets, level actors and settings are all check-before-create and never removed.
+- **Reason:**
+  - The contract only says the table is created; the Data Asset is the tuning source of truth and should be authored (by the setup script or by hand), not silently materialised by a regeneration tool. Smaller reading.
+  - Regeneration must not be able to destroy an unrelated authored table that happens to sit at the -Table= path.
+  - Rows are generated data, so replacing an incomplete set is a repair, not a deletion; a complete table is left untouched so re-runs are side-effect free.
+
+## D-0055 — `IA_Move` / `IA_Look` / `IA_Jump` are not created by the Milestone 0 setup script
+- **Milestone:** 0 · **Charter:** Charter 8 ('IA_Move, IA_Look, IA_Jump | template | World | Template locomotion, unchanged'); contract asset list
+- **Decision:** The script creates exactly the fifteen actions the contract lists; template locomotion stays on the template's own /Game/ThirdPerson/Input assets, to be wired to AAscensionCharacter in Milestone 1.
+- **Reason:** The charter says the locomotion actions are the template's, unchanged; duplicating them under /Game/Ascension/Input would be scope creep at Milestone 0.
+
+## D-0056 — `L_Test_Cultivation` placeholder contents
+- **Milestone:** 0 · **Charter:** Contract 'Content/Python/ascension_m0_setup.py' ('a floor, a light, a player start, and a BP_CultivationPawn-less placeholder note')
+- **Decision:** Floor = StaticMeshActor with /Engine/BasicShapes/Plane scaled 40x40 (a 40 m square, comfortably larger than Realm 1 Reach 800 uu); KeyLight = DirectionalLight (pitch -50, intensity 3) plus a SkyFill SkyLight; PlayerStart at Z=100; M0_Note = an engine Note actor with the Milestone 0 text. Actors are found by label on re-runs so missing ones are added without duplicating existing ones. An existing level is loaded (not recreated) and only gains missing actors.
+- **Reason:** A directional light alone leaves the unlit side of the placeholder floor black in an otherwise empty level; the Sky Light is the smallest addition that keeps the map readable for the F2 screenshot. Everything else is exactly the contract.
+
+## D-0057 — Owner checklist includes an optional "copy Third Person template content" step
+- **Milestone:** 0 · **Charter:** D-0002 (Third Person template); Appendix C (/Game/Characters read-only)
+- **Decision:** docs/OWNER_FIRST_RUN.md step 1 tells the owner to create a throwaway Third Person C++ project on 5.8 and copy only its Content/Characters, ThirdPerson, LevelPrototyping and Input folders into this repository's Content/, marked optional at Milestone 0 and required before Milestone 1.
+- **Reason:** The repository cannot hold the template's binary content; nothing in Milestone 0 needs it, but the mannequin and template locomotion are Milestone 1 inputs, so the step is documented now without pulling Milestone 1 work forward.
+
+## D-0058 — Milestone 0 implementation details with no gameplay effect (grouped)
+- **Milestone:** 0 · **Charter:** 11.1, contract SKELETON_M0
+- **Decision:**
+  - *UCultivationState::GetRow is native-only; Blueprint gets GetRowCopy.* GetRow keeps the contract's C++ signature as a plain inline method; a BlueprintPure `FRealmLayerRow GetRowCopy() const` (DisplayName 'Get Row') is the Blueprint face. GetLadderConfig (const pointer return) is likewise native-only; SetLadderConfig stays BlueprintCallable.
+  - *Wisp mesh has no collision, no overlaps, no shadow.* AQiWisp's StaticMeshComponent is created with collision disabled, overlap events off and shadow casting off; the actor never ticks (PrimaryActorTick.bCanEverTick = false).
+  - *Field position is polar in the owner's horizontal plane; FieldCenter is set by the field at spawn.* FQiWispData carries Angle (degrees) alongside DistanceFromCenter; AQiWisp::SetFieldPosition places the actor at FieldCenter + (cos, sin) * Distance with Z = 0, where FieldCenter is the owner's location written by UQiFieldComponent::SpawnWisp.
+  - *UDA_Mantra::ApplyToStack is idempotent (removes its own source first).* ApplyToStack calls RemoveModifiersFromSource(MantraId.GetTagName()) before pushing entries, so applying the same Mantra twice never doubles a bonus.
+  - *PreferredCirculationDirection is an int32 clamped to -1..1 on UDA_Mantra.* Stored as int32 with ClampMin -1 / ClampMax 1 (UDA_QiPreset uses a float for its own PreferredCirculationDirection trait, which is a weight, not a choice).
+  - *Primary asset types "Mantra" and "Dao".* UDA_Mantra::GetPrimaryAssetId returns type "Mantra"; UDA_Dao returns type "Dao"; both expose a static PrimaryAssetType like UDA_RealmLadderConfig.
+  - *Convenience entry points added beyond the contract's minimum (no gameplay).* Added: UDA_Mantra::GetSourceId(); UDA_Dao::TryGetNode() (Blueprint face of FindNode); UAutoCultivationController::SetEnabled/IsEnabled (needed by IA_AutoCultivate and the F2 ToggleAuto), SetActiveMantra (the status text needs the Mantra name), IsYieldingToPlayer, ApplyDefaultsToStack, GetAura/GetField/GetState, and a protected ReleaseHeldInputs that calls only aura public input functions. Explicit *_Implementation declarations for every BlueprintNativeEvent.
+  - *Shared fill logic is a private static helper with the commandlet as a friend.* URealmLadderEditorLibrary::FillTable, SaveTablePackage, LoadConfigAsset, LoadOrCreateTableAsset and ToObjectPath are private statics; the class declares 'friend class URealmLadderCommandlet;'. DefaultConfigAssetPath/DefaultTableAssetPath are public so the two default asset paths exist in one place. A -NoSave dry-run switch was added to the commandlet.
+  - *Package saving uses UPackage::SavePackage with FSavePackageArgs.* SaveTablePackage builds the filename with FPackageName::LongPackageNameToFilename(PackageName, GetAssetPackageExtension()) and calls UPackage::SavePackage(Package, Table, *FileName, SaveArgs) with TopLevelFlags = RF_Public | RF_Standalone, SaveFlags = SAVE_None, Error = GError.
+- **Reason:**
+  - UnrealHeaderTool rejects reference return types on UFUNCTIONs; the contract fixes the C++ signature, not the reflection exposure.
+  - Wisps are field-driven data holders with a mesh; physics or shadows would be cost with no readable consequence.
+  - The charter defines wisp placement by radius fraction and angle around the Dantian; a polar model is the smallest representation that the wave (front distance) and the drift (angle) both read directly.
+  - Mantra swaps, save restores and the F2 panel can all re-apply the active Mantra; making the operation a replace rather than an append is the smallest way to keep the stack correct without a separate bookkeeping object.
+  - The Mantra value is a discrete choice consumed by Auto mode to pick Q or E; an integer cannot express a half-preference by accident and reads as the charter wrote it.
+  - The contract fixes primary asset types for the other two data assets but not these; without an override the type would be the class name ("DA_Mantra"). Naming them the same way keeps asset-manager scanning uniform for the Milestone 3 menu pages.
+  - Each is a pure accessor or plumbing the contract's own listed callers require; none implements a Milestone 1+ behaviour. Explicit _Implementation declarations are accepted by every UHT version and let subclasses use override.
+  - Follows the contract wording literally (private helper, commandlet calls it) while keeping the fill/save code out of the Blueprint-visible surface. -NoSave lets the owner print the 81 rows without touching the asset on disk.
+  - The direct API works identically in the commandlet (no editor UI, no prompts) and from the editor library; the UEditorLoadingAndSavingUtils path can open dialogs in an interactive editor.
+
+## Writer decisions not given their own entry
+- Items already logged by the round-1 review fixer: auto exposure (D-0017), tag settings placement (D-0018), Python settings placement (D-0019), CompanyName (D-0020), theme colours (D-0022), chance clamp (D-0023), Auto pulse range and gates (D-0024), `ERealmStage::Peak` (D-0025), Stillness at Realm 1 (D-0026).
+- Superseded during review round 1: string-based `RequestGameplayTag(..., false)` in the ladder config constructor (replaced by native tags); the editor module's separate `LogAscensionEditor` category (removed; `LogAscension` is exported instead, recorded under docs/SKELETON_M0.md "Divergences accepted at Milestone 0").
