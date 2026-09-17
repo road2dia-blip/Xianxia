@@ -9,10 +9,9 @@ public class Ascension : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
 		// Lets every file include by area, e.g. "Cultivation/AuraComponent.h", "Player/CultivationPawn.h", "UI/DebugPanelWidget.h".
-		PublicIncludePaths.AddRange(new string[]
-		{
-			"Ascension"
-		});
+		// The absolute module directory resolves identically under every BuildSettingsVersion; a bare relative "Ascension"
+		// would be rebased against UBT's working directory and could be dropped with "Referenced directory ... does not exist".
+		PublicIncludePaths.Add(ModuleDirectory);
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

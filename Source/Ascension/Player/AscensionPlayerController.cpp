@@ -169,6 +169,8 @@ bool AAscensionPlayerController::SetMappingContextActive(UInputMappingContext* C
 	return true;
 }
 
+// Milestone 1 plumbing: unused until EnterMeditation/ExitMeditation stop being log-only stubs (see the TODO(M1) lines above),
+// which is also why Cultivation/CultivationSubsystem.h, Cultivation/CultivationState.h and AscensionGameplayTags.h are included.
 void AAscensionPlayerController::PushControllerEvent(const FGameplayTag& EventTag, const FText& Message)
 {
 	const UWorld* World = GetWorld();

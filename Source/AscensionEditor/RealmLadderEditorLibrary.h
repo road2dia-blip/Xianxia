@@ -29,8 +29,9 @@ public:
 	 * Regenerates every row of Table from Config (81 rows, R1L1..R9L9), marks the package dirty and, when bSave is
 	 * true, saves it to disk. Returns false (and logs why) when either object is null, when the table's row struct is
 	 * not FRealmLayerRow, when the generator did not produce exactly 81 rows, or when saving failed.
+	 * (No CallInEditor: that specifier only produces a details-panel button for non-static, parameterless members.)
 	 */
-	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Ascension|Editor")
+	UFUNCTION(BlueprintCallable, Category = "Ascension|Editor")
 	static bool RegenerateLadderTable(UDA_RealmLadderConfig* Config, UDataTable* Table, bool bSave);
 
 	/** Default asset path of the ladder config (contract: "-Config=<asset path>" default). */

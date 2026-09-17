@@ -15,11 +15,13 @@ Rules (charter 14.2 rule 2): every step checks for the asset before creating it,
 after any failure. The script NEVER deletes anything. Every step is wrapped in try/except; anything the API
 could not do is printed as a "MANUAL STEP" line and collected into the summary at the end.
 
-Run it once from the Unreal Editor (5.8, Python Editor Script Plugin enabled):
-    Output Log  ->  switch the command line to "Python"  ->  py ascension_m0_setup.py
-The bare filename resolves because the plugin puts <Project>/Content/Python on sys.path. A path relative to the
-project folder does NOT resolve (the editor's working directory is Engine/Binaries/Win64); if the bare name fails,
-use the absolute path:  py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"
+Run it once from the Unreal Editor (5.8, Python Editor Script Plugin enabled), either way:
+    Output Log, command line left on "Cmd"        ->  py ascension_m0_setup.py
+    Output Log, command line switched to "Python" ->  ascension_m0_setup.py          (file mode: no "py" prefix)
+("py" is the Cmd-mode console command; in Python mode the line itself is run, and a first token ending in ".py" runs
+as a file.) The bare filename resolves because the plugin puts <Project>/Content/Python on sys.path. A path relative
+to the project folder does NOT resolve (the editor's working directory is Engine/Binaries/Win64); if the bare name
+fails, use the absolute path:  py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"
 or from the Python console:
     exec(open(r"<project>/Content/Python/ascension_m0_setup.py").read())
 """
@@ -42,8 +44,9 @@ LADDER_TABLE_NAME = "DT_RealmLadder"
 LADDER_JSON_RELATIVE = os.path.join("Ascension", "Data", "DT_RealmLadder.json")  # under Content/
 EXPECTED_ROWS = 81  # charter 6.1
 
-# Charter Section 8. (name, value type name). Every action here is a button. IA_Move/IA_Look/IA_Jump are created under
-# /Game/Ascension/Input and mapped in IMC_World in Milestone 1 (Appendix C: the template's /Game/Input is unused).
+# Charter Section 8. (name, value type name). Every action here is a button. IA_Move/IA_Look/IA_Jump are the template's own
+# assets and are NOT created here: Milestone 1 references them from the template's input folder, never copies them
+# (D-0027, D-0055, D-0059).
 INPUT_ACTIONS = [
     ("IA_Circulate_CW", "BOOLEAN"),
     ("IA_Circulate_CCW", "BOOLEAN"),
@@ -519,12 +522,13 @@ def step_test_level():
         R.existed.append(path)
         R.log("{} exists; loading it to add any missing placeholder actors.".format(path))
         if not _load_level(path):
-            R.manual_step("Could not load {}. Open it and check it has Floor, KeyLight, PlayerStart and the M0 note.".format(path))
+            R.manual_step("Could not load {}. Open it and check it has Floor, KeyLight, SkyFill, PlayerStart and M0_Note.".format(path))
             return
     else:
         if not _new_level(path):
             R.manual_step("new_level({}) failed. Create an empty level at that path (File > New Level > Empty Level) "
-                          "and add a floor, a directional light and a Player Start.".format(path))
+                          "and add a floor (Plane, scale 40,40,1), a directional light, a sky light, a Player Start "
+                          "and a Note actor (Floor, KeyLight, SkyFill, PlayerStart, M0_Note).".format(path))
             return
         R.created.append(path)
 
@@ -554,8 +558,11 @@ def step_test_level():
 
     def configure_floor(actor):
         mesh = load_asset("/Engine/BasicShapes/Plane")
+        if mesh is None:
+            raise RuntimeError("/Engine/BasicShapes/Plane did not load (set Static Mesh = /Engine/BasicShapes/Plane by hand)")
         component = actor.get_editor_property("static_mesh_component")
-        component.set_static_mesh(mesh)
+        if not component.set_static_mesh(mesh):
+            raise RuntimeError("set_static_mesh returned False (set Static Mesh = /Engine/BasicShapes/Plane by hand)")
         actor.set_actor_scale3d(unreal.Vector(40.0, 40.0, 1.0))  # a 40 m square; Reach 800 fits with room to spare
 
     def configure_light(actor):

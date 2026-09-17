@@ -15,14 +15,15 @@ Estimated time: 20–40 minutes, most of it the first C++ build.
 ## 1. Template content (optional at Milestone 0, required before Milestone 1)
 The project is a Third Person template project by decision D-0002, but the template's binary content (mannequins, animations, `IA_Move`/`IA_Look`/`IA_Jump`, `IMC_Default`) cannot live in this repository. Nothing in Milestone 0 uses them; Milestone 1 (seated mannequin, template locomotion) does.
 
-When you want them: in the Launcher create a throwaway **Third Person, C++** project on 5.8 anywhere, then copy its `Content/Characters`, `Content/ThirdPerson`, `Content/LevelPrototyping` and `Content/Input` folders into this repository's `Content/`. Copy **only** those content folders. Do not copy its `Source/`, `Config/` or `.uproject`. Those folders are read-only inputs (Appendix C).
+When you want them: in the Launcher create a throwaway **Third Person, C++** project on 5.8 anywhere, then copy its `Content/Characters`, `Content/ThirdPerson`, `Content/LevelPrototyping` and `Content/Input` folders into this repository's `Content/`. Copy **only** those content folders. Do not copy its `Source/`, `Config/` or `.uproject`. Those folders are read-only inputs (Appendix C). `Content/Input` (`/Game/Input`) is where charter Appendix C and D-0027 expect the template's `IA_Move`/`IA_Look`/`IA_Jump`/`IMC_Default`; if your 5.8 template keeps them somewhere else (older templates used `Content/ThirdPerson/Input`), copy that folder instead and note the path in the report. Milestone 1 references those assets where they are; it never copies them under `/Game/Ascension/` (D-0055, D-0059).
 
 ## 2. Generate project files and build the Editor target
 1. Right-click `Ascension.uproject` → **Generate Visual Studio project files**. If Windows asks which engine, pick 5.8.
 2. Open `Ascension.sln`. Configuration **Development Editor**, platform **Win64**, startup project **Ascension**. Build (Ctrl+Shift+B). This builds both modules: `Ascension` (runtime) and `AscensionEditor` (the ladder commandlet and editor library, D-0009).
    - Alternative without the IDE: double-click `Ascension.uproject`; when the editor says the modules are missing or out of date, choose **Yes** to rebuild.
-3. **Keep the build output.** Copy the tail of the Output window (the `------ Build ------` summary, every warning, every error) into `docs/MILESTONE_0_REPORT.md` under COMPILE, and save the whole thing as `docs/evidence/M0_build_log.txt`.
-4. If the build fails: the code was written for UE 5.8 from API knowledge without a compiler (the only check was `Tools/StubCompile/`, a model test). Paste the first error verbatim into the next Claude session; the fix is a follow-up commit on the same branch (charter 14.2 rule 7).
+3. Search the build output for `Referenced directory` (an Unreal Build Tool warning that an include path was dropped). Both `Build.cs` files pass `ModuleDirectory`, so the line should not appear; if it does, paste it into the report.
+4. **Keep the build output.** Copy the tail of the Output window (the `------ Build ------` summary, every warning, every error) into `docs/MILESTONE_0_REPORT.md` under COMPILE, and save the whole thing as `docs/evidence/M0_build_log.txt`.
+5. If the build fails: the code was written for UE 5.8 from API knowledge without a compiler (the only check was `Tools/StubCompile/`, a model test). Paste the first error verbatim into the next Claude session; the fix is a follow-up commit on the same branch (charter 14.2 rule 7).
 
 ## 3. Open the project
 1. Launch `Ascension.uproject` (from the IDE with F5, or double-click).
@@ -31,12 +32,12 @@ When you want them: in the Launcher create a throwaway **Third Person, C++** pro
 4. **Edit → Project Settings → Plugins → Python** (or search "Python"): confirm `Content/Python` is listed under Additional Paths and **Developer Mode** is on (both are in `Config/DefaultEngine.ini`).
 
 ## 4. Run the setup script (creates the binary assets)
-1. **Window → Output Log**. At the bottom, change the command-line dropdown from **Cmd** to **Python**.
+1. **Window → Output Log**. Leave the command-line dropdown at the bottom on **Cmd**.
 2. Run:
    ```
    py ascension_m0_setup.py
    ```
-   The bare filename works because the plugin puts `<Project>/Content/Python` on `sys.path`. A path relative to the project folder does **not** resolve (the editor's working directory is `Engine/Binaries/Win64`). If the bare name reports "file not found", use the absolute path: `py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"`.
+   Alternatively switch the dropdown to **Python** (file mode) and enter just `ascension_m0_setup.py`, without the `py` prefix (`py` is the Cmd-mode console command; in Python mode the line itself is executed, and a first token ending in `.py` runs as a file). The bare filename works because the plugin puts `<Project>/Content/Python` on `sys.path`. A path relative to the project folder does **not** resolve (the editor's working directory is `Engine/Binaries/Win64`). If the bare name reports "file not found", use the absolute path: `py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"`.
 3. Read the `[Ascension M0] SUMMARY` block at the end. It lists what was **Created**, what **Already existed**, what **Failed**, and every **MANUAL STEP**. Save the whole script output as `docs/evidence/M0_setup_script_log.txt`.
 4. The script is idempotent and never deletes: if anything failed, fix the cause (usually "build the C++ first") and run it again.
 
@@ -55,7 +56,7 @@ The script wraps every editor API call it could not verify against a 5.8 editor 
 | `Create IMC_... by hand under /Game/Ascension/Input and add its charter Section 8 mappings` | One mapping context could not be created; the other was still attempted. | Right-click → Input → Input Mapping Context, name it as shown, add the (action, key) pairs listed in `IMC_BINDINGS` at the top of the script (charter Section 8), save. |
 | `Map key <Key> to <Action> in IMC_...` | A key mapping could not be added by script. | Open the mapping context, add the mapping shown, save. The full table is in charter Section 8 and at the top of the script. |
 | `Map <Key> -> <Action> in IMC_... (the action asset is missing)` | The IA asset was not created. | Re-run the script after the IA step succeeds, or create the Input Action by hand under `/Game/Ascension/Input`. |
-| `new_level(...) failed` / `Could not load ...` | The map could not be created or loaded. | File → New Level → **Empty Level**, save as `/Game/Ascension/Maps/L_Test_Cultivation`, add a Plane (scale 40×40), a Directional Light, a Sky Light and a Player Start. |
+| `new_level(...) failed` / `Could not load ...` | The map could not be created or loaded. | File → New Level → **Empty Level**, save as `/Game/Ascension/Maps/L_Test_Cultivation`, add the five placeholder actors: Floor (Plane, scale 40,40,1), KeyLight (Directional Light), SkyFill (Sky Light), PlayerStart, and a Note actor named M0_Note (D-0056). |
 | `Place a <Class> named '<Label>'` / `Finish configuring '<Label>'` | One placeholder actor could not be spawned or configured. | Add it by hand: Floor (Plane, scale 40,40,1), KeyLight (Directional Light), SkyFill (Sky Light), PlayerStart, M0_Note (Note actor). |
 | `Save ... by hand` | An asset or the level could not be saved by script. | **File → Save All**. |
 | `Project Settings > Game > Ascension: set ...` | The settings CDO could not be written from Python. | Nothing is lost: `Config/DefaultGame.ini` already holds every soft reference (D-0010, D-0021). Open **Project Settings → Game → Ascension** and confirm Ladder Config, Ladder Table, the four Input references (World/Cultivation Mapping Context, Debug Overlay/Panel Action), Debug Overlay Class and Debug Panel Class are filled. |

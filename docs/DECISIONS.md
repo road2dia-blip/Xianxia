@@ -301,7 +301,7 @@ Format: `D-NNNN — Title` · Milestone · Charter reference · Decision · Reas
 
 ## D-0055 — `IA_Move` / `IA_Look` / `IA_Jump` are not created by the Milestone 0 setup script
 - **Milestone:** 0 · **Charter:** Charter 8 ('IA_Move, IA_Look, IA_Jump | template | World | Template locomotion, unchanged'); contract asset list
-- **Decision:** The script creates exactly the fifteen actions the contract lists; template locomotion stays on the template's own /Game/ThirdPerson/Input assets, to be wired to AAscensionCharacter in Milestone 1.
+- **Decision:** The script creates exactly the fifteen actions the contract lists; template locomotion stays on the template's own /Game/ThirdPerson/Input assets, to be wired to AAscensionCharacter in Milestone 1. *(Folder path corrected by D-0059: the template's input folder is `/Game/Input`, per Appendix C and D-0027.)*
 - **Reason:** The charter says the locomotion actions are the template's, unchanged; duplicating them under /Game/Ascension/Input would be scope creep at Milestone 0.
 
 ## D-0056 — `L_Test_Cultivation` placeholder contents
@@ -336,6 +336,20 @@ Format: `D-NNNN — Title` · Milestone · Charter reference · Decision · Reas
   - Each is a pure accessor or plumbing the contract's own listed callers require; none implements a Milestone 1+ behaviour. Explicit _Implementation declarations are accepted by every UHT version and let subclasses use override.
   - Follows the contract wording literally (private helper, commandlet calls it) while keeping the fill/save code out of the Blueprint-visible surface. -NoSave lets the owner print the 81 rows without touching the asset on disk.
   - The direct API works identically in the commandlet (no editor UI, no prompts) and from the editor library; the UEditorLoadingAndSavingUtils path can open dialogs in an interactive editor.
+
+## D-0059 — The template's locomotion input assets live in `/Game/Input` and are referenced, never copied
+- **Milestone:** 0 · **Charter:** 8 (`IA_Move`, `IA_Look`, `IA_Jump` "template, unchanged"), Appendix C ("`/Game/Input` (unused)"); D-0027, D-0055, D-0057
+- **Decision:** The three texts that named the template's input folder disagreed (D-0027 and Appendix C: `/Game/Input`; D-0055: `/Game/ThirdPerson/Input`; the setup-script comment even said the actions would be created under `/Game/Ascension/Input` in Milestone 1). The single reading from now on: the template's `IA_Move`/`IA_Look`/`IA_Jump`/`IMC_Default` are the template's own assets in the template's own input folder, `/Game/Input` (`Content/Input`) in the 5.8 Third Person template as Appendix C and D-0027 state; the owner confirms the actual folder when copying the template content (`docs/OWNER_FIRST_RUN.md` step 1) and notes any difference in the report. Milestone 1 references those assets where they are and never duplicates them under `/Game/Ascension/Input/`. D-0055's `/Game/ThirdPerson/Input` was a slip and is superseded on that point only; the setup-script comment now says the same as this entry.
+- **Reason:** Charter 8 says the locomotion actions are the template's, unchanged; Appendix C fixes their folder; one instruction for Milestone 1 is smaller than three that disagree.
+
+## D-0060 — Two Milestone 0 readings found by review round 2: Tribulation class-wide defaults, and the F2 panel counts as a menu for the cursor rule
+- **Milestone:** 0 · **Charter:** 6.5, Appendix A (Tribulation timings and surge radii); 8 ("There is no cursor in the Cultivation Space except inside menus"); 11.5 (the F2 debug panel)
+- **Decision:**
+  - *Tribulation and surge defaults are the Appendix A Coalescence values.* `UTribulationDefinition::DurationSeconds` defaults to 60 (the R1→R2 Coalescence length; charter 6.5 allows 45–120, and the property is clamped to that range) and `FSurgeEvent::RadiusFraction` defaults to 0.9 (Coalescence "at 0.9 Reach"). Every Tribulation subclass sets its own values in data (Milestones 3–7); the defaults only make a freshly created definition valid.
+  - *The F2 debug panel is a menu for the charter 8 cursor rule.* `AAscensionPlayerController::ApplyInputModeForPanel` switches to `FInputModeGameAndUI` with the cursor shown while the panel is open and back to `FInputModeGameOnly` with the cursor hidden when it closes. The F1 overlay never shows the cursor.
+- **Reason:**
+  - The first Tribulation the player meets is Coalescence; its values are the smallest sensible defaults and are already in the charter, so nothing is invented.
+  - The panel is operated with buttons and text fields (set Realm/Layer, spawn a preset at a radius, print the stack); it cannot be used without a cursor, and it is a review tool, never part of cultivation, so treating it as a menu is the smaller reading of charter 8.
 
 ## Writer decisions not given their own entry
 - Items already logged by the round-1 review fixer: auto exposure (D-0017), tag settings placement (D-0018), Python settings placement (D-0019), CompanyName (D-0020), theme colours (D-0022), chance clamp (D-0023), Auto pulse range and gates (D-0024), `ERealmStage::Peak` (D-0025), Stillness at Realm 1 (D-0026).

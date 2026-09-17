@@ -9,10 +9,11 @@ Scripts here run inside the Unreal Editor through the **Python Editor Script Plu
 ## Running `ascension_m0_setup.py`
 1. Build the project (the script needs the C++ classes `DA_RealmLadderConfig`, `RealmLayerRow`, `DebugPanelWidget`, `DebugOverlayWidget`, `AscensionSettings` to exist in the editor).
 2. Open the project in Unreal Editor 5.8.
-3. **Output Log** → change the command-line dropdown from `Cmd` to `Python` → run:
+3. **Output Log** → with the command-line dropdown on **Cmd** run:
    ```
    py ascension_m0_setup.py
    ```
+   or switch the dropdown to **Python** (file mode) and enter just `ascension_m0_setup.py` (no `py` prefix: `py` is the Cmd-mode console command; in Python mode the line itself is executed, and a first token ending in `.py` runs as a file).
    The bare filename resolves because the plugin puts `<Project>/Content/Python` on `sys.path`; a path relative to the project folder does **not** (the editor's working directory is `Engine/Binaries/Win64`). Fallback: the absolute path, `py "C:\<full path>\Ascension\Content\Python\ascension_m0_setup.py"`. Or, from **Tools → Python console**: `exec(open(r"<project>/Content/Python/ascension_m0_setup.py").read())`.
 4. Read the `[Ascension M0] SUMMARY` block at the end of the log. Every `MANUAL STEP` line is something the API could not do on this machine; `docs/OWNER_FIRST_RUN.md` lists the possible ones and what to do for each.
 

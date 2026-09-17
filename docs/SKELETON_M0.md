@@ -19,7 +19,7 @@ Source/Ascension.Target.cs              TargetType.Game,   ExtraModuleNames: Asc
 Source/AscensionEditor.Target.cs        TargetType.Editor, ExtraModuleNames: Ascension, AscensionEditor
 Source/Ascension/Ascension.Build.cs     Public: Core, CoreUObject, Engine, InputCore, EnhancedInput, GameplayTags, UMG, DeveloperSettings, Niagara
                                         Private: Slate, SlateCore
-                                        PublicIncludePaths: "Ascension" (so includes are e.g. "Cultivation/AuraComponent.h")
+                                        PublicIncludePaths: ModuleDirectory (so includes are e.g. "Cultivation/AuraComponent.h")
 Source/AscensionEditor/AscensionEditor.Build.cs  Public: Core, CoreUObject, Engine, Ascension; Private: UnrealEd, GameplayTags, AssetTools, AssetRegistry, EditorSubsystem, Blutility, UMGEditor
 ```
 `Ascension.h/.cpp`: `class FAscensionModule : public IModuleInterface` with `StartupModule`/`ShutdownModule`; `IMPLEMENT_PRIMARY_GAME_MODULE(FAscensionModule, Ascension, "Ascension");`
@@ -139,6 +139,8 @@ The code written against this contract improved on it in the places below. Each 
 - `UAscensionSettings` adds the four input soft references of D-0021.
 - `UDebugPanelWidget::PresetChoices` is `TArray<TObjectPtr<UDA_QiPreset>>`.
 - `FSurgeEvent` adds `MinWarningLeadSeconds` and `GetWarningLeadClamped()`.
+- `Ascension.Build.cs` passes `PublicIncludePaths.Add(ModuleDirectory)` (the absolute module directory) instead of the bare relative string `"Ascension"` first written here: the absolute form resolves identically under every `BuildSettingsVersion` and cannot be dropped by UBT's "Referenced directory ... does not exist" rebasing. `AscensionEditor.Build.cs` does the same.
+- `URealmLadderEditorLibrary::RegenerateLadderTable` is `UFUNCTION(BlueprintCallable, Category="Ascension|Editor")` without `CallInEditor`: that specifier only yields a details-panel button for non-static, parameterless member functions, so on a static function with parameters it promised a button that never appears. `BlueprintCallable` alone exposes it to Editor Utility Widgets/Blueprints and Python.
 - Logging: the editor module logs through the exported runtime category `LogAscension` (`ASCENSION_API DECLARE_LOG_CATEGORY_EXTERN`), as the global rule requires; there is no `LogAscensionEditor`.
 - Config: the effective Python plugin settings are in `DefaultEngine.ini` (D-0019) and the effective GameplayTags keys in `DefaultGameplayTags.ini` (D-0018); the sections named above in `DefaultEditor.ini`/`DefaultGame.ini` are mirrors.
 - Content: Enhanced Input assets live under `/Game/Ascension/Input/` (D-0027), a folder charter 11.1 does not list.

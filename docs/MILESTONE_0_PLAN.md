@@ -95,7 +95,7 @@ These match the charter's own preview at 1.1, 1.9, 2.1, 4.1 and 7.1. At 9.9 the 
 | `DA_RealmLadderConfig`, `DT_RealmLadder` assets | No editor to author `.uasset` | Constants as C++ defaults on the class; 81 rows as committed CSV/JSON; `ascension_m0_setup.py` creates both assets and fills the table |
 | `L_Test_Cultivation` with the F2 debug panel; screenshot | No editor | `UDebugPanelWidget` C++ base with every 11.5 function stubbed; the setup script creates the map, the widget Blueprint, and the F1/F2 bindings; the owner takes the screenshot |
 | Gameplay Tag list evidence | none | `Config/DefaultGameplayTags.ini` (the tag list is text) plus native declarations in `AscensionGameplayTags.h` |
-| Git "one commit" | none | Done on branch `claude/new-session-zyrmnu` |
+| Git "one commit" | none (but the repository was owner-created with an initial empty commit, and usage-limit interruptions forced work-in-progress commits) | The branch `claude/new-session-zyrmnu` carries the initial commit, a groundwork commit and four `WIP` commits ahead of the Milestone 0 commit; history is never rewritten to squash them (charter 2.3). Exact list in `docs/MILESTONE_0_REPORT.md` VERIFIED → Git. |
 
 ## 7. Approval
 The kickoff asks for approval of this plan before execution. This session is non-interactive, so execution proceeded on the branch under D-0016; nothing is merged. If any item above is rejected, the fix is a follow-up commit on the same branch, and Milestone 1 does not begin until the owner approves Milestone 0.
